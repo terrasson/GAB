@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  # ── Ollama (Hermes) ────────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: gab-ollama
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    restart: unless-stopped
+    # Décommentez si vous avez un GPU NVIDIA
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # ── GAB Bot (Telegram + WhatsApp + Discord) ───────────────────────────────
+  gab:
+    build: .
+    container_name: gab-bot
+    env_file: .env
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+    ports:
+      - "8000:8000"    # Webhooks WhatsApp + GET /health
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
