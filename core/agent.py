@@ -46,6 +46,7 @@ class GabAgent:
         "/summary":     "_cmd_summary",
         "/clear":       "_cmd_clear",
         "/status":      "_cmd_status",
+        "/members":     "_cmd_members",
     }
 
     def __init__(self, cfg: Config):
@@ -169,6 +170,19 @@ class GabAgent:
             f"  • WhatsApp : {'✅' if cfg.WA_ENABLED else '❌'}",
             f"  • Discord  : {'✅' if cfg.DISCORD_ENABLED else '❌'}",
         ]
+        return Response(text="\n".join(lines))
+
+    async def _cmd_members(self, msg: Message, _: str) -> Response:
+        if not msg.group_id:
+            return Response(text="ℹ️ `/members` doit être utilisé dans un groupe.")
+        group = self.groups.get(msg.group_id)
+        if not group or not group.get("members"):
+            return Response(text="Aucun membre enregistré pour le moment.")
+        info = group.get("members_info", {})
+        lines = [f"👥 *Membres connus de {group['name']}* :"]
+        for uid in group["members"]:
+            uname = info.get(uid, {}).get("username") or "—"
+            lines.append(f"  • `{uid}` — {uname}")
         return Response(text="\n".join(lines))
 
     # ── Conversation LLM ─────────────────────────────────────────────────────

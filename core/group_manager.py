@@ -38,6 +38,38 @@ class GroupManager:
             group["members"].append(user_id)
         return True
 
+    def register_member(
+        self,
+        group_id: str,
+        group_name: str,
+        platform: str,
+        user_id: str,
+        username: str = "",
+    ) -> bool:
+        """Enregistre un membre d'un groupe natif. Auto-crée le groupe si absent.
+        Retourne True si nouveau membre, False s'il était déjà connu."""
+        group = self._groups.get(group_id)
+        if not group:
+            group = {
+                "id":         group_id,
+                "name":       group_name or f"Groupe {platform}",
+                "platform":   platform,
+                "creator":    user_id,
+                "members":    [],
+                "members_info": {},
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self._groups[group_id] = group
+            logger.info("Groupe natif enregistré : %s (%s) sur %s", group["name"], group_id, platform)
+
+        group.setdefault("members_info", {})
+        if user_id in group["members"]:
+            return False
+        group["members"].append(user_id)
+        group["members_info"][user_id] = {"username": username}
+        logger.info("➕ Membre %s (id=%s) ajouté au groupe %s", username, user_id, group_id)
+        return True
+
     def remove_member(self, group_id: str, user_id: str) -> bool:
         group = self._groups.get(group_id)
         if not group:

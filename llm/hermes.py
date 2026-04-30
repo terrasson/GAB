@@ -91,18 +91,19 @@ class HermesClient:
         system: str | None,
         stream: bool,
     ) -> dict:
-        payload: dict = {
+        full_messages = list(messages)
+        if system:
+            full_messages = [{"role": "system", "content": system}, *full_messages]
+        return {
             "model":  self.model,
             "stream": stream,
+            "think":  False,
             "options": {
                 "num_predict": self.max_tokens,
                 "temperature": self.temperature,
             },
-            "messages": messages,
+            "messages": full_messages,
         }
-        if system:
-            payload["system"] = system
-        return payload
 
     async def aclose(self) -> None:
         await self._client.aclose()

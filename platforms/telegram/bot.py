@@ -11,6 +11,7 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
+    ChatMemberHandler,
     filters,
     ContextTypes,
 )
@@ -43,7 +44,10 @@ class TelegramPlatform(BasePlatform):
         logger.info("🎩 Telegram — démarrage du polling…")
         await self._app.initialize()
         await self._app.start()
-        await self._app.updater.start_polling(drop_pending_updates=True)
+        await self._app.updater.start_polling(
+            drop_pending_updates=True,
+            allowed_updates=["message", "chat_member", "my_chat_member", "callback_query"],
+        )
 
     async def stop(self) -> None:
         await self._app.updater.stop()
@@ -65,6 +69,8 @@ class TelegramPlatform(BasePlatform):
         app.add_handler(CommandHandler("status",       self._on_command))
         app.add_handler(CallbackQueryHandler(self._on_button))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message))
+        app.add_handler(ChatMemberHandler(self._on_chat_member, ChatMemberHandler.CHAT_MEMBER))
+        app.add_handler(ChatMemberHandler(self._on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
 
     async def _on_command(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await self._dispatch(update, ctx)
@@ -98,6 +104,49 @@ class TelegramPlatform(BasePlatform):
             except Exception as exc:
                 logger.warning("Impossible de créer le lien Telegram : %s", exc)
 
+    # ── Suivi des membres ─────────────────────────────────────────────────────
+
+    async def _on_chat_member(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Détecte les arrivées/départs de membres dans un groupe où GAB est admin."""
+        cm = update.chat_member
+        if not cm:
+            return
+        chat = cm.chat
+        new = cm.new_chat_member
+        old = cm.old_chat_member
+        was_in  = old.status in ("member", "administrator", "creator", "restricted")
+        is_in   = new.status in ("member", "administrator", "creator", "restricted")
+        user    = new.user
+
+        if is_in and not was_in:
+            self.agent.groups.register_member(
+                group_id   = str(chat.id),
+                group_name = chat.title or "",
+                platform   = self.name,
+                user_id    = str(user.id),
+                username   = user.username or user.first_name or "",
+            )
+        elif was_in and not is_in:
+            self.agent.groups.remove_member(str(chat.id), str(user.id))
+            logger.info("➖ Membre %s (id=%s) a quitté %s", user.first_name, user.id, chat.id)
+
+    async def _on_my_chat_member(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Détecte quand GAB lui-même est ajouté/retiré d'un groupe."""
+        mcm = update.my_chat_member
+        if not mcm:
+            return
+        chat = mcm.chat
+        new_status = mcm.new_chat_member.status
+        if new_status in ("member", "administrator") and chat.type in ("group", "supergroup"):
+            self.agent.groups.register_member(
+                group_id   = str(chat.id),
+                group_name = chat.title or "",
+                platform   = self.name,
+                user_id    = str(mcm.from_user.id),
+                username   = mcm.from_user.username or mcm.from_user.first_name or "",
+            )
+            logger.info("🎩 GAB ajouté au groupe %s (%s) — statut: %s", chat.title, chat.id, new_status)
+
     # ── Dispatch central ──────────────────────────────────────────────────────
 
     async def _dispatch(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -122,6 +171,16 @@ class TelegramPlatform(BasePlatform):
             group_id   = str(chat.id) if chat.type in ("group", "supergroup") else None,
             group_name = chat.title if chat.type in ("group", "supergroup") else None,
         )
+
+        # Collecte passive : tout sender dans un groupe est enregistré
+        if msg.group_id:
+            self.agent.groups.register_member(
+                group_id   = msg.group_id,
+                group_name = msg.group_name or "",
+                platform   = self.name,
+                user_id    = msg.user_id,
+                username   = user.username or user.first_name or "",
+            )
 
         response = await self.agent.handle(msg)
         await tg_msg.reply_text(response.text, parse_mode=ParseMode.MARKDOWN)
