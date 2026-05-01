@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)  # `.env` est la source de vérité, prime sur les vars d'env système
 
 _PROMPT_FILE = Path(__file__).parent / "prompts" / "system.md"
 _FALLBACK_PROMPT = (
