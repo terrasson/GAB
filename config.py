@@ -2,9 +2,22 @@
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
+
+_PROMPT_FILE = Path(__file__).parent / "prompts" / "system.md"
+_FALLBACK_PROMPT = (
+    "Tu es GAB, un concierge-agent qui aide des groupes humains à s'organiser. "
+    "Réponds en français, avec courtoisie, efficacité et concision."
+)
+
+
+def _load_system_prompt() -> str:
+    if _PROMPT_FILE.exists():
+        return _PROMPT_FILE.read_text(encoding="utf-8").strip()
+    return _FALLBACK_PROMPT
 
 
 @dataclass
@@ -22,12 +35,7 @@ class Config:
     LLM_MAX_TOKENS: int    = field(default_factory=lambda: int(os.getenv("LLM_MAX_TOKENS", "1024")))
     LLM_TEMPERATURE: float = field(default_factory=lambda: float(os.getenv("LLM_TEMPERATURE", "0.7")))
 
-    SYSTEM_PROMPT: str = (
-        "Tu es GAB, un majordome virtuel élégant, précis et légèrement pince-sans-rire. "
-        "Tu réponds toujours en français, avec courtoisie et efficacité. "
-        "Tu organises des groupes de discussion, invites des membres, "
-        "résumes les échanges et aides l'utilisateur sur toutes ses demandes."
-    )
+    SYSTEM_PROMPT: str = field(default_factory=_load_system_prompt)
 
     # ── Telegram ─────────────────────────────────────────────────────────────
     TELEGRAM_TOKEN: str   = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""))

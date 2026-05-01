@@ -4,6 +4,11 @@
 
 GAB est un agent IA qui organise des **groupes de discussion** et assiste vos utilisateurs sur **Telegram, WhatsApp et Discord** — depuis un seul service unifié.
 
+> **Vision** : GAB est conçu comme un **concierge-agent** pour groupes humains
+> (sortie, voyage, anniversaire). Voir [`ROADMAP.md`](ROADMAP.md) pour les paliers
+> de développement, et [`prompts/system.md`](prompts/system.md) pour le rôle
+> exact qu'il joue dans chaque conversation.
+
 ---
 
 ## ✨ Fonctionnalités
