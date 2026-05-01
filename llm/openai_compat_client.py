@@ -33,6 +33,15 @@ class OpenAICompatClient(LLMClient):
             },
         )
 
+    def _api_url(self, path: str) -> str:
+        """Construit l'URL finale en n'ajoutant `/v1` que si ce n'est pas déjà
+        présent dans la base. Permet à l'utilisateur de mettre soit
+        `https://api.openai.com` soit `https://api.openai.com/v1`."""
+        base = self.base_url
+        if base.endswith("/v1") or "/v1/" in base or "/api/v1" in base:
+            return f"{base}/{path}"
+        return f"{base}/v1/{path}"
+
     async def chat(self, messages: list[dict], system: str | None = None) -> str:
         full = list(messages)
         if system:
@@ -45,7 +54,7 @@ class OpenAICompatClient(LLMClient):
             "stream":      False,
         }
         try:
-            resp = await self._client.post(f"{self.base_url}/v1/chat/completions", json=payload)
+            resp = await self._client.post(self._api_url("chat/completions"), json=payload)
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"].strip()
         except httpx.HTTPStatusError as exc:
@@ -57,7 +66,7 @@ class OpenAICompatClient(LLMClient):
 
     async def is_alive(self) -> bool:
         try:
-            resp = await self._client.get(f"{self.base_url}/v1/models")
+            resp = await self._client.get(self._api_url("models"))
             resp.raise_for_status()
             return True
         except Exception:
