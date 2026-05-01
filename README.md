@@ -109,10 +109,43 @@ docker compose up -d
 
 ---
 
-## 🤖 Modèle LLM
+## 🤖 LLM — providers supportés
 
-GAB utilise **[Nous Hermes 2](https://ollama.com/library/nous-hermes2)** via Ollama.
-Vous pouvez substituer n'importe quel modèle Ollama en changeant `HERMES_MODEL` dans `.env`.
+GAB est **LLM-agnostique** : choisissez le backend qui vous convient via `LLM_PROVIDER` dans `.env`.
+
+| Provider     | `LLM_PROVIDER` | Exemple `LLM_MODEL`         | Clé API ?            |
+|--------------|----------------|-----------------------------|----------------------|
+| Ollama local | `ollama`       | `qwen3:8b`, `llama3.1:8b`   | non (auto-hébergé)   |
+| OpenAI       | `openai`       | `gpt-4o-mini`, `gpt-4o`     | oui                  |
+| DeepSeek     | `deepseek`     | `deepseek-chat`             | oui                  |
+| Mistral      | `mistral`      | `mistral-large-latest`      | oui                  |
+| Groq         | `groq`         | `llama-3.1-70b-versatile`   | oui                  |
+| Together     | `together`     | `meta-llama/Llama-3-70b-…`  | oui                  |
+| Anthropic    | `anthropic`    | `claude-sonnet-4-6`         | oui                  |
+
+### Exemples de configuration
+
+**Ollama local (défaut)**
+```env
+LLM_PROVIDER=ollama
+LLM_MODEL=qwen3:8b
+```
+
+**DeepSeek**
+```env
+LLM_PROVIDER=deepseek
+LLM_MODEL=deepseek-chat
+LLM_API_KEY=sk-xxxxxxxxxxxxxxxx
+```
+
+**Claude (Anthropic)**
+```env
+LLM_PROVIDER=anthropic
+LLM_MODEL=claude-sonnet-4-6
+LLM_API_KEY=sk-ant-xxxxxxxxxxxxxxxx
+```
+
+**Endpoint custom** (vLLM, LM Studio, ollama-openai…) — utilisez `openai` comme provider et précisez `LLM_BASE_URL`.
 
 ---
 

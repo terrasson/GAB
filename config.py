@@ -9,9 +9,16 @@ load_dotenv()
 
 @dataclass
 class Config:
-    # ── LLM Hermes / Ollama ──────────────────────────────────────────────────
-    OLLAMA_BASE_URL: str   = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
-    HERMES_MODEL: str      = field(default_factory=lambda: os.getenv("HERMES_MODEL", "nous-hermes2"))
+    # ── LLM (provider-agnostique) ────────────────────────────────────────────
+    # Provider : ollama | openai | deepseek | mistral | groq | together | anthropic
+    LLM_PROVIDER: str    = field(default_factory=lambda: os.getenv("LLM_PROVIDER", "ollama"))
+    # Modèle : qwen3:8b, gpt-4o-mini, deepseek-chat, claude-sonnet-4-6, mistral-large-latest, …
+    LLM_MODEL: str       = field(default_factory=lambda: os.getenv("LLM_MODEL") or os.getenv("HERMES_MODEL", "qwen3:8b"))
+    # URL de l'API. Vide = défaut du provider (ex: https://api.deepseek.com pour deepseek)
+    LLM_BASE_URL: str    = field(default_factory=lambda: os.getenv("LLM_BASE_URL") or os.getenv("OLLAMA_BASE_URL", ""))
+    # Clé API. Vide pour Ollama, requis pour les providers cloud.
+    LLM_API_KEY: str     = field(default_factory=lambda: os.getenv("LLM_API_KEY", ""))
+
     LLM_MAX_TOKENS: int    = field(default_factory=lambda: int(os.getenv("LLM_MAX_TOKENS", "1024")))
     LLM_TEMPERATURE: float = field(default_factory=lambda: float(os.getenv("LLM_TEMPERATURE", "0.7")))
 

@@ -1,14 +1,14 @@
 """
 GabAgent — cerveau central de GAB.
 Reçoit un message depuis n'importe quelle plateforme,
-le traite avec Hermes et retourne une réponse unifiée.
+le traite avec le LLM configuré et retourne une réponse unifiée.
 """
 
 import logging
 from dataclasses import dataclass
 
 from config import Config
-from llm import HermesClient
+from llm import make_llm_client
 from core.memory import Memory
 from core.group_manager import GroupManager
 
@@ -50,15 +50,10 @@ class GabAgent:
     }
 
     def __init__(self, cfg: Config):
-        self.cfg     = cfg
-        self.memory  = Memory()
-        self.groups  = GroupManager()
-        self.hermes  = HermesClient(
-            base_url    = cfg.OLLAMA_BASE_URL,
-            model       = cfg.HERMES_MODEL,
-            max_tokens  = cfg.LLM_MAX_TOKENS,
-            temperature = cfg.LLM_TEMPERATURE,
-        )
+        self.cfg    = cfg
+        self.memory = Memory()
+        self.groups = GroupManager()
+        self.llm    = make_llm_client(cfg)
 
     # ── Point d'entrée principal ─────────────────────────────────────────────
 
@@ -73,7 +68,7 @@ class GabAgent:
                 arg = text[len(cmd):].strip()
                 return await getattr(self, method_name)(msg, arg)
 
-        # Sinon : conversation libre avec Hermes
+        # Sinon : conversation libre avec le LLM
         return await self._llm_chat(msg, text)
 
     # ── Commandes ────────────────────────────────────────────────────────────
@@ -83,7 +78,7 @@ class GabAgent:
             text=(
                 f"🎩 Bonsoir, {msg.username}. Je suis *GAB*, votre majordome virtuel.\n\n"
                 "Je peux vous aider à :\n"
-                "• 💬 Répondre à vos questions (Hermes LLM)\n"
+                "• 💬 Répondre à vos questions\n"
                 "• 👥 Créer et gérer des groupes de discussion\n"
                 "• 📨 Inviter des membres dans vos groupes\n"
                 "• 📝 Résumer les conversations\n\n"
@@ -95,7 +90,7 @@ class GabAgent:
         return Response(text=(
             "🎩 *Commandes GAB*\n\n"
             "`/start`                — Accueil\n"
-            "`/ask <question>`       — Poser une question à Hermes\n"
+            "`/ask <question>`       — Poser une question au LLM\n"
             "`/creategroup <nom>`    — Créer un groupe de discussion\n"
             "`/invite <user>`        — Inviter un membre dans le groupe courant\n"
             "`/summary`              — Résumer la conversation récente\n"
@@ -142,12 +137,12 @@ class GabAgent:
         if not history:
             return Response(text="Aucun historique à résumer pour le moment.")
 
-        # On demande à Hermes de résumer
+        # On demande au LLM de résumer
         summary_prompt = (
             "Voici une conversation. Fais-en un résumé clair et concis en 5 points maximum :\n\n"
             + "\n".join(f"{m['role'].upper()} : {m['content']}" for m in history)
         )
-        result = await self.hermes.chat(
+        result = await self.llm.chat(
             messages=[{"role": "user", "content": summary_prompt}],
             system=self.cfg.SYSTEM_PROMPT,
         )
@@ -158,12 +153,11 @@ class GabAgent:
         return Response(text="🗑️ Historique effacé. Nouvelle conversation démarrée.")
 
     async def _cmd_status(self, msg: Message, _: str) -> Response:
-        alive = await self.hermes.is_alive()
-        hermes_status = "✅ connecté" if alive else "❌ hors ligne"
+        alive = await self.llm.is_alive()
+        llm_status = "✅ connecté" if alive else "❌ hors ligne"
         cfg = self.cfg
         lines = [
-            f"🤖 Hermes (`{cfg.HERMES_MODEL}`) — {hermes_status}",
-            f"🔗 Ollama : `{cfg.OLLAMA_BASE_URL}`",
+            f"🤖 LLM `{cfg.LLM_PROVIDER}/{cfg.LLM_MODEL}` — {llm_status}",
             "",
             "📡 *Plateformes actives :*",
             f"  • Telegram : {'✅' if cfg.TELEGRAM_ENABLED else '❌'}",
@@ -192,18 +186,18 @@ class GabAgent:
         conv.add("user", text)
 
         try:
-            reply = await self.hermes.chat(
+            reply = await self.llm.chat(
                 messages = conv.get_history(),
                 system   = self.cfg.SYSTEM_PROMPT,
             )
             conv.add("assistant", reply)
             return Response(text=reply)
         except Exception as exc:
-            logger.error("Erreur Hermes : %s", exc)
+            logger.error("Erreur LLM : %s", exc)
             return Response(
-                text="⚠️ Je ne parviens pas à joindre Hermes pour le moment. "
-                     "Vérifiez qu'Ollama tourne bien sur le serveur."
+                text="⚠️ Je ne parviens pas à joindre le LLM pour le moment. "
+                     "Vérifiez que le backend configuré est accessible."
             )
 
     async def close(self) -> None:
-        await self.hermes.aclose()
+        await self.llm.aclose()
