@@ -69,3 +69,14 @@ class Config:
     ALLOWED_GROUPS: list[str] = field(
         default_factory=lambda: [x.strip() for x in os.getenv("ALLOWED_GROUPS", "").split(",") if x.strip()]
     )
+
+    # ── Mots-clés d'éveil (en groupe, sous forme de hashtag : #gab, #ia, …) ───
+    # Ils déclenchent la réponse de GAB en plus des autres mécanismes (mention,
+    # commande, reply). Insensibles à la casse côté détection.
+    WAKE_TAGS: list[str] = field(
+        default_factory=lambda: [
+            x.strip().lower()
+            for x in os.getenv("WAKE_TAGS", "gab,ia").split(",")
+            if x.strip()
+        ]
+    )

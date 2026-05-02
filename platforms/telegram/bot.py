@@ -3,6 +3,7 @@ Adaptateur Telegram pour GAB.
 Utilise python-telegram-bot en mode polling.
 """
 
+import re
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
@@ -20,6 +21,9 @@ from platforms.base import BasePlatform
 from core.agent import GabAgent, Message
 
 logger = logging.getLogger("GAB.telegram")
+
+# Hashtag : `#` puis un mot (lettres/chiffres/underscore, accentué inclus en \w UNICODE)
+HASHTAG_RE = re.compile(r"#(\w+)", re.UNICODE)
 
 
 class TelegramPlatform(BasePlatform):
@@ -216,6 +220,7 @@ class TelegramPlatform(BasePlatform):
         """En groupe, GAB ne répond que si on l'invite explicitement :
         - Commande (/start, /sondage, ...)
         - Mention textuelle `@<bot_username>`
+        - Hashtag d'éveil (`#gab`, `#ia`, …) configurable via WAKE_TAGS
         - Réponse à l'un de ses propres messages
         """
         text = tg_msg.text or ""
@@ -232,6 +237,13 @@ class TelegramPlatform(BasePlatform):
                     mention = text[entity.offset : entity.offset + entity.length]
                     if mention.lower() == f"@{bot_username}":
                         return True
+
+        # Hashtag d'éveil (#gab, #ia, …)
+        wake_tags = set(self.agent.cfg.WAKE_TAGS or [])
+        if wake_tags:
+            for match in HASHTAG_RE.finditer(text):
+                if match.group(1).lower() in wake_tags:
+                    return True
 
         # Réponse à un message de GAB
         if tg_msg.reply_to_message and tg_msg.reply_to_message.from_user:
