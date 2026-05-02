@@ -105,11 +105,69 @@ groupe.
 - [ ] Lien avec le wallet : un billet acheté pour 6 personnes → la dépense
       est automatiquement enregistrée dans le tricount du groupe
 
+#### 3d — Capacité d'action vocale (GAB passe des appels)
+
+> GAB compose un numéro et dialogue en temps réel avec un humain (ou un
+> répondeur vocal IA) au nom du groupe : réserver une table, confirmer un
+> hôtel, vérifier qu'un train est à l'heure, négocier un horaire avec un
+> prestataire. Quand l'appel aboutit, le résultat est automatiquement
+> consigné dans `/agenda` et le wallet (3b).
+
+##### Cas d'usage
+
+- [ ] **Réservation restau** : "GAB, réserve chez Mario vendredi 20h pour 6"
+      → GAB appelle, dialogue, confirme, envoie le résumé au groupe.
+- [ ] **Confirmation hôtel** : appel pour valider une demande spéciale
+      (chambre adjacente, lit bébé, arrivée tardive).
+- [ ] **Vérification logistique** : "Mon train est-il à l'heure ?" → appel
+      au service client si l'API ne suffit pas.
+- [ ] **Suivi post-réservation** : "Confirmer notre table de demain" la veille.
+- [ ] **Fallback humain** : si le destinataire raccroche ou est confus, GAB
+      arrête poliment et envoie le numéro au demandeur pour qu'il appelle.
+
+##### Stack technique envisagée
+
+- Plateformes voix-IA candidates : [Vapi](https://vapi.ai),
+  [Bland](https://bland.ai), [Retell AI](https://retellai.com),
+  [ElevenLabs Conversational AI](https://elevenlabs.io/conversational-ai).
+- Architecture : LLM (Manifest) pour le cerveau de la conversation
+  + STT/TTS temps réel + numéro virtuel rentable au mois.
+- Fonctions exposées au LLM voix : `confirm_booking()`, `escalate_to_human()`,
+  `record_outcome(success, details)` — pour clore l'appel proprement et
+  écrire dans le wallet.
+- Self-hosters : clé API du provider voix dans `.env`, facturation à la
+  minute (typique 0.10–0.30 €/min tout compris).
+
+##### Conformité légale (UE / France) — non négociable
+
+- [ ] **Auto-identification IA** dès la première phrase, exigée par
+      l'AI Act (art. 50) : *« Bonjour, je suis un assistant IA appelant pour
+      le compte de M. Frédéric Terrasson… »*
+- [ ] **Consentement à l'enregistrement** si l'appel est enregistré
+      (loi française) — proposition par défaut : ne pas enregistrer, ne
+      conserver que la transcription textuelle anonymisée.
+- [ ] **Aucune action irréversible** sans validation humaine : GAB peut
+      *demander* une réservation, mais si le restaurant exige un acompte
+      CB, GAB raccroche et renvoie le lien à l'utilisateur.
+- [ ] **Trace écrite systématique** envoyée dans le groupe : qui a été
+      appelé, à quelle heure, quel résultat, quelle phrase d'engagement
+      a été prise — pour que le groupe garde la main.
+
+##### Risques et mitigations
+
+| Risque | Mitigation |
+|---|---|
+| Restaurant raccroche en réalisant que c'est une IA | Voix très naturelle (ElevenLabs) + auto-identification claire mais brève + UX de fallback |
+| Coût qui dérape (boucle d'appel) | Hard-cap durée par appel (3 min) + budget mensuel par instance |
+| Erreur de réservation (mauvaise date, mauvais nombre) | Rappel de tous les paramètres en fin d'appel, log dans `/agenda` immédiatement |
+| Hallucination du LLM en direct | Function calling strict, le LLM ne peut pas inventer un horaire — il doit appeler `confirm_booking()` |
+
 #### Hors scope intentionnel (palier 6+ ou jamais)
 
 - ❌ Réservation et paiement direct depuis GAB
 - ❌ Agrégation de cartes bancaires / wallets (Apple Pay, etc.)
 - ❌ Émission de billets par GAB (nécessite agrément + certificat IATA pour le vol)
+- ❌ Faire passer GAB pour un humain au téléphone (interdit par l'AI Act)
 
 ### Palier 4 — Synchronisation multi-plateformes
 
