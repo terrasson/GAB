@@ -65,12 +65,29 @@ class OpenAICompatClient(LLMClient):
             raise
 
     async def is_alive(self) -> bool:
+        """Vérifie que le provider est joignable.
+
+        `/v1/models` est l'endpoint OpenAI standard, mais tous les providers
+        OpenAI-compatibles ne l'exposent pas (ex : Manifest, certains vLLM,
+        certaines instances LM Studio). Un 404/405 doit donc être traité
+        comme « endpoint absent » et non « provider mort ».
+
+        Règles :
+        - 200            → joignable, on est sûr
+        - 404 / 405      → endpoint pas exposé, on assume joignable
+        - 401 / 403      → clé invalide, on considère KO (le chat échouera aussi)
+        - autres 4xx     → le provider a répondu de manière structurée, joignable
+        - 5xx            → provider en panne, KO
+        - erreur réseau  → injoignable, KO
+        """
         try:
             resp = await self._client.get(self._api_url("models"))
-            resp.raise_for_status()
-            return True
-        except Exception:
+        except httpx.RequestError:
             return False
+        code = resp.status_code
+        if code == 200 or code in (404, 405) or (400 <= code < 500 and code not in (401, 403)):
+            return True
+        return False
 
     async def aclose(self) -> None:
         await self._client.aclose()
