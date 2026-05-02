@@ -1,6 +1,10 @@
+<p align="center">
+  <img src="assets/logo.png" alt="GAB — Concierge IA" width="240"/>
+</p>
+
 # 🎩 GAB — Grand Assistant de Bureau
 
-> Majordome virtuel multi-plateforme, propulsé par le LLM **Hermes** (Ollama).
+> **Concierge-agent IA pour groupes humains** — multi-plateforme (Telegram, WhatsApp, Discord), LLM-agnostique (Ollama, OpenAI, DeepSeek, Mistral, Claude, Manifest…).
 
 GAB est un agent IA qui organise des **groupes de discussion** et assiste vos utilisateurs sur **Telegram, WhatsApp et Discord** — depuis un seul service unifié.
 
