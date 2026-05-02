@@ -133,7 +133,7 @@ class GabAgent:
         )
 
     async def _cmd_summary(self, msg: Message, _: str) -> Response:
-        conv = self.memory.get(msg.platform, msg.user_id)
+        conv = self.memory.get(msg.platform, msg.user_id, msg.group_id)
         history = conv.get_history()
         if not history:
             return Response(text="Aucun historique à résumer pour le moment.")
@@ -150,8 +150,9 @@ class GabAgent:
         return Response(text=f"📝 *Résumé de la conversation :*\n\n{result}")
 
     async def _cmd_clear(self, msg: Message, _: str) -> Response:
-        self.memory.clear(msg.platform, msg.user_id)
-        return Response(text="🗑️ Historique effacé. Nouvelle conversation démarrée.")
+        self.memory.clear(msg.platform, msg.user_id, msg.group_id)
+        scope = "du groupe" if msg.group_id else "de la conversation"
+        return Response(text=f"🗑️ Historique {scope} effacé. Nouvelle conversation démarrée.")
 
     async def _cmd_status(self, msg: Message, _: str) -> Response:
         alive = await self.llm.is_alive()
@@ -183,8 +184,9 @@ class GabAgent:
     # ── Conversation LLM ─────────────────────────────────────────────────────
 
     async def _llm_chat(self, msg: Message, text: str) -> Response:
-        conv = self.memory.get(msg.platform, msg.user_id)
-        conv.add("user", text)
+        conv = self.memory.get(msg.platform, msg.user_id, msg.group_id)
+        # En groupe : on enregistre l'auteur pour que le LLM sache qui parle
+        conv.add("user", text, author=msg.username)
 
         try:
             reply = await self.llm.chat(

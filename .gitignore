@@ -19,6 +19,9 @@ build/
 # Logs
 *.log
 
+# Données persistantes locales (SQLite)
+data/
+
 # OS
 .DS_Store
 Thumbs.db
