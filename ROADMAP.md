@@ -49,10 +49,102 @@ Le prompt système complet est dans [`prompts/system.md`](prompts/system.md).
 
 ### Palier 2 — Intelligence proactive
 
-- [ ] Détection d'intention en conversation (« on pourrait aller au resto » → propose un sondage)
-- [ ] Personnalité "chef de groupe" : intervient au bon moment, pas trop bavard
-- [ ] Récap multi-jours / multi-membres
-- [ ] Médiation douce en cas de désaccord détecté
+> **Pierre angulaire** : aujourd'hui GAB n'a qu'une mémoire **épisodique**
+> (l'historique des messages). Conséquence : si un fait est dit puis corrigé
+> plus tard, le LLM voit les deux versions et peut s'embrouiller. Le
+> palier 2 introduit la **mémoire sémantique** — la connaissance "vraie
+> maintenant" qui s'écrase quand on la corrige. C'est ce qui transforme
+> GAB d'un chatbot conversationnel en agent qui retient vraiment.
+
+#### 2.1 — Mémoire sémantique structurée (foundation)
+
+> **Distinction clé** :
+> - Mémoire épisodique = "ce qui a été dit et quand" (déjà en SQLite via
+>   palier 1.1)
+> - Mémoire sémantique = "ce qui est vrai actuellement" (à construire)
+
+##### Architecture proposée
+
+Nouvelle table SQLite `facts` :
+
+```sql
+CREATE TABLE facts (
+    group_id    TEXT NOT NULL,
+    key         TEXT NOT NULL,         -- ex : "event.dinner.date"
+    value       TEXT NOT NULL,
+    confidence  REAL NOT NULL DEFAULT 1.0,
+    source      TEXT NOT NULL,         -- "user:<id>" ou "auto"
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (group_id, key)
+);
+```
+
+Convention de clés hiérarchique : `event.<nom>.{date,place,time,attendees}`,
+`member.<id>.{allergies,preferences}`, `group.{rules,language}`.
+
+##### Workflow
+
+1. **Extraction** : à chaque message en groupe, GAB détecte les faits
+   nouveaux ou mis à jour via le LLM (instruction dédiée dans le system
+   prompt + outputs structurés `extract_facts({...})`).
+2. **Mise à jour** : un fait avec la même `key` **écrase** l'ancien
+   (UPSERT). L'historique des changements peut être tracé via une table
+   `facts_history` séparée si besoin.
+3. **Injection** : à chaque requête LLM, les faits actuels du groupe sont
+   ajoutés au system prompt sous forme structurée :
+   ```
+   ---
+   Faits actuels du groupe Test2 :
+   - event.dinner.date : vendredi 8 mai 2026
+   - event.dinner.place : chez Mario
+   - event.dinner.time : 21h (mis à jour il y a 5 minutes)
+   ```
+4. **Conflit** : si un user dit "on change pour samedi" alors qu'on avait
+   "vendredi", GAB confirme avant d'écraser : *"On passe bien de
+   vendredi à samedi ? Je mets à jour."*
+
+##### Cases d'usage débloqués
+
+- "Quand on dîne ?" → GAB regarde `event.dinner.date`, pas l'historique
+- "On change le rdv pour 21h" → écrase, plus de pollution future
+- "Audrey est allergique aux noix" → stocké dans `member.audrey.allergies`,
+  réutilisé quand on parle restau
+- "Le code wifi de l'airbnb c'est XYZ" → `event.trip.wifi`
+
+##### Fichiers à créer / modifier
+
+- `core/facts.py` (nouveau) : `FactStore` + `extract_facts_from_message()`
+- `core/storage.py` : ajouter le schema de `facts` à `_SCHEMA`
+- `core/agent.py::_build_system_prompt()` : injecter les faits du groupe
+- `prompts/system.md` : ajouter une section "Comment retenir des faits"
+- (optionnel) Commande `/facts` pour debug : afficher la sémantique
+  actuelle d'un groupe
+
+#### 2.2 — Détection d'intention en conversation
+
+- [ ] « on pourrait aller au resto » → GAB propose un `/sondage` Restaurant
+- [ ] « il faut qu'on rappelle Audrey jeudi » → propose un `/rappel`
+- [ ] « on est combien ? » → consulte `/members` automatiquement
+
+#### 2.3 — Personnalité "chef de groupe"
+
+- [ ] GAB intervient au **bon moment** : pas trop bavard, pas absent quand
+      on a besoin de lui
+- [ ] Heuristique : intervient si silence prolongé sur une décision en
+      attente, ou si une intention claire est détectée
+
+#### 2.4 — Récap multi-jours / multi-membres
+
+- [ ] `/recap` ou intervention spontanée : "voici ce qui s'est dit cette
+      semaine, voici les décisions actées, voici ce qu'il reste à trancher"
+- [ ] Utilise la mémoire sémantique (2.1) pour les décisions actées et
+      l'épisodique pour le narratif
+
+#### 2.5 — Médiation douce en cas de désaccord détecté
+
+- [ ] Détection de tension (analyse de tonalité par le LLM)
+- [ ] GAB propose un break, reformule le désaccord en termes neutres,
+      suggère un sondage si besoin pour trancher
 
 ### Palier 3 — Outils du concierge (intégrations externes)
 
