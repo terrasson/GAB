@@ -6,6 +6,8 @@ le traite avec le LLM configuré et retourne une réponse unifiée.
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from config import Config
 from llm import make_llm_client
@@ -13,6 +15,23 @@ from core.memory import Memory
 from core.group_manager import GroupManager
 
 logger = logging.getLogger("GAB.agent")
+
+# Localisation FR sans dépendre de la locale système (qui peut manquer sur le VPS)
+_WEEKDAYS_FR = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
+_MONTHS_FR = (
+    "", "janvier", "février", "mars", "avril", "mai", "juin",
+    "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+)
+_TZ_PARIS = ZoneInfo("Europe/Paris")
+
+
+def _now_fr() -> str:
+    """Retourne la date/heure courantes en français, ex : 'samedi 2 mai 2026, 21h32 (heure de Paris)'."""
+    now = datetime.now(_TZ_PARIS)
+    return (
+        f"{_WEEKDAYS_FR[now.weekday()]} {now.day} {_MONTHS_FR[now.month]} {now.year}, "
+        f"{now.hour:02d}h{now.minute:02d} (heure de Paris)"
+    )
 
 
 @dataclass
@@ -177,7 +196,7 @@ class GabAgent:
         )
         result = await self.llm.chat(
             messages=[{"role": "user", "content": summary_prompt}],
-            system=self.cfg.SYSTEM_PROMPT,
+            system=self._build_system_prompt(),
         )
         return Response(text=f"📝 *Résumé de la conversation :*\n\n{result}")
 
@@ -223,7 +242,7 @@ class GabAgent:
         try:
             reply = await self.llm.chat(
                 messages = conv.get_history(),
-                system   = self.cfg.SYSTEM_PROMPT,
+                system   = self._build_system_prompt(),
             )
             conv.add("assistant", reply)
             return Response(text=reply)
@@ -233,6 +252,24 @@ class GabAgent:
                 text="⚠️ Je ne parviens pas à joindre le LLM pour le moment. "
                      "Vérifiez que le backend configuré est accessible."
             )
+
+    # ── System prompt enrichi du contexte temporel ───────────────────────────
+
+    def _build_system_prompt(self) -> str:
+        """Combine le prompt système éditable avec la date/heure courantes.
+
+        Sans cet ancrage, les LLM hallucinent l'heure (souvent celle de leur
+        dataset d'entraînement). En injectant la date/heure réelles à chaque
+        appel, GAB répond correctement aux questions temporelles ("on est
+        quand ?", "il est quelle heure ?", "quel jour ?").
+        """
+        return (
+            f"{self.cfg.SYSTEM_PROMPT}\n\n"
+            f"---\n"
+            f"Contexte temporel actuel : {_now_fr()}.\n"
+            f"Utilise cette information quand tu réponds à des questions sur "
+            f"la date ou l'heure."
+        )
 
     async def close(self) -> None:
         await self.llm.aclose()
