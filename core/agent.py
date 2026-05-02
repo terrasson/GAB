@@ -95,7 +95,8 @@ class GabAgent:
             "`/invite <user>`        — Inviter un membre dans le groupe courant\n"
             "`/summary`              — Résumer la conversation récente\n"
             "`/clear`                — Effacer l'historique de la conversation\n"
-            "`/status`               — État du LLM et des plateformes actives\n\n"
+            "`/status`               — État du LLM et des plateformes actives\n"
+            "`/members`              — Lister les IDs des membres connus du groupe\n\n"
             "💬 Vous pouvez aussi m'écrire librement."
         ))
 

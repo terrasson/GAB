@@ -67,6 +67,7 @@ class TelegramPlatform(BasePlatform):
         app.add_handler(CommandHandler("summary",      self._on_command))
         app.add_handler(CommandHandler("clear",        self._on_command))
         app.add_handler(CommandHandler("status",       self._on_command))
+        app.add_handler(CommandHandler("members",      self._on_command))
         app.add_handler(CallbackQueryHandler(self._on_button))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message))
         app.add_handler(ChatMemberHandler(self._on_chat_member, ChatMemberHandler.CHAT_MEMBER))
