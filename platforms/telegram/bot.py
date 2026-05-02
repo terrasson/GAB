@@ -157,20 +157,16 @@ class TelegramPlatform(BasePlatform):
         tg_msg = update.effective_message
         user   = update.effective_user
         chat   = update.effective_chat
-
-        # Indicateur "en train d'écrire…"
-        await ctx.bot.send_chat_action(chat_id=chat.id, action=ChatAction.TYPING)
-
-        # Reconstruction du texte avec les args de commande
-        text = tg_msg.text or ""
+        text   = tg_msg.text or ""
+        is_group = chat.type in ("group", "supergroup")
 
         msg = Message(
             platform   = self.name,
             user_id    = str(user.id),
             username   = user.first_name or user.username or "User",
             text       = text,
-            group_id   = str(chat.id) if chat.type in ("group", "supergroup") else None,
-            group_name = chat.title if chat.type in ("group", "supergroup") else None,
+            group_id   = str(chat.id) if is_group else None,
+            group_name = chat.title if is_group else None,
         )
 
         # Collecte passive : tout sender dans un groupe est enregistré
@@ -183,13 +179,27 @@ class TelegramPlatform(BasePlatform):
                 username   = user.username or user.first_name or "",
             )
 
+        # Mode écoute passive : en groupe, on ne parle que si sollicité.
+        # Sinon on enregistre le message dans la mémoire du groupe pour que
+        # le LLM ait le contexte la prochaine fois qu'il est appelé.
+        if is_group and not self._should_respond_in_group(tg_msg, ctx):
+            conv = self.agent.memory.get(msg.platform, msg.user_id, msg.group_id)
+            conv.add("user", text, author=user.username or user.first_name or "")
+            return
+
+        # Indicateur "en train d'écrire…"
+        await ctx.bot.send_chat_action(chat_id=chat.id, action=ChatAction.TYPING)
+
         response = await self.agent.handle(msg)
-        await tg_msg.reply_text(response.text, parse_mode=ParseMode.MARKDOWN)
+        # Réponse silencieuse : on n'envoie rien (utile pour le rejet whitelist
+        # en groupe ou tout autre cas où Response.text est vide).
+        if response.text:
+            await tg_msg.reply_text(response.text, parse_mode=ParseMode.MARKDOWN)
 
         # Génération automatique d'un lien si on est dans un groupe
         if (
             response.action == "create_group"
-            and chat.type in ("group", "supergroup")
+            and is_group
         ):
             try:
                 link = await ctx.bot.create_chat_invite_link(
@@ -199,3 +209,33 @@ class TelegramPlatform(BasePlatform):
                 await tg_msg.reply_text(f"🔗 Lien d'invitation Telegram : {link.invite_link}")
             except Exception as exc:
                 logger.warning("Lien d'invitation impossible : %s", exc)
+
+    # ── Mode écoute passive : on ne répond que si sollicité ───────────────────
+
+    def _should_respond_in_group(self, tg_msg, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
+        """En groupe, GAB ne répond que si on l'invite explicitement :
+        - Commande (/start, /sondage, ...)
+        - Mention textuelle `@<bot_username>`
+        - Réponse à l'un de ses propres messages
+        """
+        text = tg_msg.text or ""
+
+        # Commande explicite
+        if text.startswith("/"):
+            return True
+
+        # Mention de GAB dans les entities
+        bot_username = (ctx.bot.username or "").lower()
+        if bot_username and tg_msg.entities:
+            for entity in tg_msg.entities:
+                if entity.type == "mention":
+                    mention = text[entity.offset : entity.offset + entity.length]
+                    if mention.lower() == f"@{bot_username}":
+                        return True
+
+        # Réponse à un message de GAB
+        if tg_msg.reply_to_message and tg_msg.reply_to_message.from_user:
+            if tg_msg.reply_to_message.from_user.id == ctx.bot.id:
+                return True
+
+        return False

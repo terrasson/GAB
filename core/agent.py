@@ -60,16 +60,48 @@ class GabAgent:
     async def handle(self, msg: Message) -> Response:
         logger.info("[%s] %s → %r", msg.platform, msg.username, msg.text[:80])
 
+        # 1. Whitelist : barrière d'accès AVANT toute consommation LLM
+        if not self._is_allowed(msg):
+            logger.info("🔒 Refusé : %s/%s (groupe %s) — non whitelisté",
+                        msg.platform, msg.user_id, msg.group_id)
+            if msg.group_id:
+                # En groupe : silence (évite la pollution + le name-and-shame)
+                return Response(text="")
+            return Response(text=(
+                "🔒 Cette instance de GAB est privée.\n"
+                "Contactez l'administrateur pour obtenir l'accès, "
+                "ou self-hostez la vôtre : https://github.com/terrasson/GAB"
+            ))
+
         text = msg.text.strip()
 
-        # Routage vers une commande explicite
+        # 2. Routage vers une commande explicite
         for cmd, method_name in self.COMMANDS.items():
             if text.lower().startswith(cmd):
                 arg = text[len(cmd):].strip()
                 return await getattr(self, method_name)(msg, arg)
 
-        # Sinon : conversation libre avec le LLM
+        # 3. Sinon : conversation libre avec le LLM
         return await self._llm_chat(msg, text)
+
+    # ── Whitelist d'accès ────────────────────────────────────────────────────
+
+    def _is_allowed(self, msg: Message) -> bool:
+        """Détermine si un message a le droit d'invoquer GAB.
+
+        Règle :
+        - Si AUCUNE liste blanche n'est configurée → tout passe (mode dev/perso).
+        - Sinon, message autorisé SI :
+          * son user_id est dans ALLOWED_USERS (en `<id>` ou `<platform>:<id>`), OU
+          * son group_id est dans ALLOWED_GROUPS.
+        """
+        cfg = self.cfg
+        if not cfg.ALLOWED_USERS and not cfg.ALLOWED_GROUPS:
+            return True
+        if msg.group_id and msg.group_id in cfg.ALLOWED_GROUPS:
+            return True
+        user_keys = {msg.user_id, f"{msg.platform}:{msg.user_id}"}
+        return any(k in cfg.ALLOWED_USERS for k in user_keys)
 
     # ── Commandes ────────────────────────────────────────────────────────────
 

@@ -59,3 +59,13 @@ class Config:
     ADMIN_IDS: list[str] = field(
         default_factory=lambda: [x.strip() for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
     )
+
+    # ── Whitelist d'accès (sécurité contre l'usage abusif des crédits LLM) ────
+    # Si les deux listes sont vides → mode permissif (tout le monde peut parler).
+    # Si au moins une est remplie → mode strict : seuls les users/groupes listés.
+    ALLOWED_USERS: list[str] = field(
+        default_factory=lambda: [x.strip() for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()]
+    )
+    ALLOWED_GROUPS: list[str] = field(
+        default_factory=lambda: [x.strip() for x in os.getenv("ALLOWED_GROUPS", "").split(",") if x.strip()]
+    )
