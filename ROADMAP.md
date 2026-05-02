@@ -38,6 +38,14 @@ Le prompt système complet est dans [`prompts/system.md`](prompts/system.md).
 - [ ] **`/liste`** — liste partagée modifiable (qui amène quoi, qui paie quoi)
 - [ ] **`/agenda`** — calendrier des événements du groupe
 - [ ] **Mode écoute passive** — n'intervient que si mentionné `@GAB` ou commande explicite
+- [ ] **Flux de bienvenue intelligent en groupe** — sur ajout du bot
+  (`MyChatMemberHandler`), détecter si rejoint comme **simple membre** vs
+  **admin** :
+  - Membre simple → message d'onboarding avec lien magique de re-promotion
+    (`?startgroup=true&admin=…`) et instructions pas-à-pas
+  - Admin → message de confirmation et liste des commandes utiles
+  → l'utilisateur lambda ne doit JAMAIS avoir à manipuler manuellement les
+  permissions admin pour que GAB fonctionne pleinement.
 
 ### Palier 2 — Intelligence proactive
 
