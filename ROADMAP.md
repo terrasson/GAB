@@ -185,11 +185,103 @@ groupe.
 
 ### Palier 5 — Distribution & SaaS
 
-- [ ] README install pas-à-pas pour self-hosters
-- [ ] Image Docker officielle + `docker-compose.yml` prêt à l'emploi
-- [ ] Tests automatisés (GitHub Actions)
-- [ ] CONTRIBUTING.md
-- [ ] Optionnel : version SaaS hébergée (modèle freemium / abonnement)
+> **Le vrai défi de la distribution** : un bot Telegram doit tourner 24/7,
+> donc il faut un dispositif always-on quelque part. Pour 95 % des
+> utilisateurs, ce n'est ni leur Mac (qui se met en veille) ni leur box
+> internet. Il faut donc proposer **plusieurs chemins** selon le profil de
+> l'utilisateur : du purement open-source self-hosté (geek) au service géré
+> clé-en-main (lambda user).
+
+#### 5.1 — Documentation pour les hébergements bon marché (palier 5 standard)
+
+- [ ] **README install pas-à-pas** pour self-hosters
+- [ ] **Image Docker officielle** + `docker-compose.yml` prêt à l'emploi
+- [ ] **Tests automatisés** (GitHub Actions : lint, type-check, tests unitaires)
+- [ ] **CONTRIBUTING.md** + templates d'issues/PR
+- [ ] **Script `install.sh`** qui installe GAB en 5 min sur un VPS Linux fresh
+      (création du venv, install des deps, configuration systemd, création du
+      `.env` interactif)
+
+#### 5.2 — Guides d'hébergement par profil utilisateur
+
+Pour chaque option, un fichier dédié dans `docs/hosting/` :
+
+##### 🟢 VPS bon marché (~3-4 €/mois) — la voie standard
+- [ ] Guide **Hetzner CX11** (3,79 €/mois — testé en prod par le créateur)
+- [ ] Guide **Scaleway DEV1-S** (1,99 €/mois — le moins cher en EU)
+- [ ] Guide **OVH VPS Starter** (3,50 €/mois — option française)
+- [ ] Guide **Contabo VPS S** (4,50 €/mois pour 8 GB RAM — bon rapport qualité/prix)
+- [ ] Lien d'affiliation par hébergeur (revenus passifs pour le projet)
+
+##### 🟢 Cloud free tier — gratuit à vie
+- [ ] Guide **Oracle Cloud Free Tier** : 4 vCPU + 24 GB RAM ARM gratuites pour
+      toujours. Setup plus technique (CB requise pour vérification, pas de
+      débit), mais c'est le saint Graal du self-hosted gratuit.
+
+##### 🟡 Hébergement chez soi
+- [ ] Guide **Raspberry Pi** : achat ~80 € one-shot, ~10 €/an d'électricité.
+      Image SD-card ready-to-burn ou script Ansible.
+- [ ] Guide **NAS Synology / QNAP** avec support Docker (Container Manager).
+- [ ] Guide **Vieux PC / serveur maison** sous Ubuntu Server.
+
+##### 🟡 Solutions geek
+- [ ] Guide **Termux sur Android** (vieux téléphone reconverti en serveur).
+- [ ] Guide **Tunnel Cloudflare / ngrok** pour exposer un GAB qui tourne sur
+      une machine derrière un NAT (utile pour les webhooks WhatsApp).
+
+##### 🔴 À éviter (documenter pourquoi)
+- Render free tier, Fly.io free, Railway free → auto-sleep après inactivité,
+  incompatible avec un bot Telegram en polling permanent.
+- Heroku → plus de free tier depuis 2022.
+
+#### 5.3 — GAB Cloud (version SaaS hébergée) — réponse à la cible lambda
+
+> Pour les utilisateurs qui ne veulent rien installer ni payer un VPS, on
+> propose un service géré clé-en-main : ils s'inscrivent, donnent leur token
+> Telegram et c'est tout, leur instance GAB tourne sur notre infra mutualisée.
+
+##### Modèle commercial proposé
+
+- [ ] **Free tier** : 1 groupe Telegram, 100 messages LLM/mois → permet de
+      tester sans engagement
+- [ ] **Plan Personnel** : 2-3 €/mois, groupes illimités, 2000 messages/mois
+- [ ] **Plan Famille** : 5 €/mois, plusieurs comptes liés, billets dans le
+      wallet partagé
+- [ ] **Plan Pro** (associations, entreprises) : 15 €/mois, intégrations
+      avancées (calendrier d'équipe, budget partagé multi-événements)
+
+##### Stack technique envisagée
+
+- [ ] Multi-tenancy : un process GAB par tenant (isolation totale) OU un
+      process partagé qui route par `chat_id` (mutualisation) — choix à faire
+      selon le volume.
+- [ ] Frontend d'inscription : Next.js + Auth (Clerk ou Supabase Auth).
+- [ ] Backend de gestion : FastAPI + PostgreSQL + Stripe pour la facturation.
+- [ ] Déploiement : Hetzner Cloud + Coolify (PaaS open source) ou Kubernetes
+      léger (k3s) si volume.
+- [ ] Tarification LLM : possibilité d'inclure une enveloppe Manifest dans
+      l'abonnement (avec marge) OU permettre à l'utilisateur d'apporter sa
+      propre clé (BYO key, modèle moins cher pour eux).
+
+##### Conformité
+
+- [ ] **RGPD** : DPO si on stocke des données EU, mentions légales, registre
+      des traitements. Privacy by design : minimum de données, suppression
+      sur demande.
+- [ ] **Hébergement EU** : Hetzner / Scaleway / OVH plutôt que AWS/GCP pour
+      la confiance des utilisateurs EU.
+- [ ] **Conditions d'utilisation** : interdiction de spam / scraping / usage
+      commercial non déclaré.
+
+#### 5.4 — Communication & community building
+
+- [ ] Page d'accueil **gab.terrasson.com** (ou autre domaine) avec démo,
+      pricing, lien GitHub
+- [ ] **Article de lancement** sur Hacker News, ProductHunt, Reddit
+      r/selfhosted, r/telegram
+- [ ] **Thread Twitter/X** détaillant la vision concierge-agent
+- [ ] **Vidéo YouTube** : "Je code mon propre concierge IA" (vlog technique)
+- [ ] **Réponse aux issues GitHub** dans les 48h pour les premiers contributeurs
 
 ---
 
