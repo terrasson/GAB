@@ -15,6 +15,7 @@ from core.memory import Memory
 from core.group_manager import GroupManager
 from core.polls import PollManager, parse_sondage
 from core.reminders import ReminderManager, parse_rappel, format_fires_at_fr
+from core.lists import ListManager, parse_liste
 from core.tools import GROUP_TOOLS, DM_TOOLS
 
 logger = logging.getLogger("GAB.agent")
@@ -71,6 +72,7 @@ class GabAgent:
         "/members":     "_cmd_members",
         "/sondage":     "_cmd_sondage",
         "/rappel":      "_cmd_rappel",
+        "/liste":       "_cmd_liste",
     }
 
     def __init__(self, cfg: Config):
@@ -79,6 +81,7 @@ class GabAgent:
         self.groups    = GroupManager()
         self.polls     = PollManager()
         self.reminders = ReminderManager()
+        self.lists     = ListManager()
         self.llm       = make_llm_client(cfg)
 
     # ── Point d'entrée principal ─────────────────────────────────────────────
@@ -156,7 +159,8 @@ class GabAgent:
             "`/status`               — État du LLM et des plateformes actives\n"
             "`/members`              — Lister les IDs des membres connus du groupe\n"
             "`/sondage <Q?> <O1>|<O2>|<O3>` — Lancer un vote multi-options\n"
-            "`/rappel <YYYY-MM-DD> <HH:MM> <message>` — Programmer un rappel\n\n"
+            "`/rappel <YYYY-MM-DD> <HH:MM> <message>` — Programmer un rappel\n"
+            "`/liste <Titre> : <Item1>|<Item2>|...` — Liste partagée modifiable\n\n"
             "💬 Vous pouvez aussi m'écrire librement."
         ))
 
@@ -276,6 +280,37 @@ class GabAgent:
             text=f"⏰ C'est noté. Je rappellerai *{message}* le {when_label}."
         )
 
+    async def _cmd_liste(self, msg: Message, arg: str) -> Response:
+        if not msg.group_id:
+            return Response(text="ℹ️ `/liste` ne fonctionne qu'en groupe.")
+        title, items = parse_liste(arg)
+        if not items:
+            return Response(text=(
+                "Usage : `/liste Titre : Item1 | Item2 | Item3`\n"
+                "Au moins 1 item est requis, séparés par `|`."
+            ))
+        lst = self.lists.create(
+            group_id   = msg.group_id,
+            creator_id = msg.user_id,
+            title      = title or "Liste",
+            items      = items,
+        )
+        return Response(
+            text        = self.lists.format_message(lst),
+            action      = "render_list",
+            action_data = lst,
+        )
+
+    async def claim_list_item(
+        self,
+        list_id: str,
+        item_index: int,
+        user_id: str,
+        user_name: str = "",
+    ) -> tuple[dict | None, str]:
+        """Point d'entrée appelé par les plateformes sur clic de bouton item."""
+        return self.lists.claim(list_id, item_index, user_id, user_name)
+
     async def _cmd_members(self, msg: Message, _: str) -> Response:
         if not msg.group_id:
             return Response(text="ℹ️ `/members` doit être utilisé dans un groupe.")
@@ -320,6 +355,8 @@ class GabAgent:
                 return self._exec_create_poll(msg, conv, tc, result.text)
             if tc.name == "create_reminder":
                 return self._exec_create_reminder(msg, conv, tc, result.text)
+            if tc.name == "create_list":
+                return self._exec_create_list(msg, conv, tc, result.text)
             logger.warning("Tool call inconnu ignoré : %s", tc.name)
 
         # Pas d'outil : réponse texte classique
@@ -420,6 +457,37 @@ class GabAgent:
             f"[Rappel programmé : {message} — {when_label}]"
         )
         return Response(text=confirm)
+
+    def _exec_create_list(self, msg: Message, conv, tool_call, accompanying_text: str) -> Response:
+        """Crée une liste partagée demandée par le LLM via tool calling."""
+        args  = tool_call.arguments or {}
+        title = (args.get("title") or "").strip()
+        items = [str(i).strip() for i in (args.get("items") or []) if str(i).strip()]
+        if not items:
+            fallback = (
+                accompanying_text
+                or "Quels items voulez-vous mettre dans la liste ? Donnez-moi-les "
+                   "et je crée la liste."
+            )
+            conv.add("assistant", fallback)
+            return Response(text=fallback)
+
+        lst = self.lists.create(
+            group_id   = msg.group_id,
+            creator_id = msg.user_id,
+            title      = title or "Liste",
+            items      = items,
+        )
+        memo = (accompanying_text + " " if accompanying_text else "") + \
+               f"[Liste créée : {lst['title']} — items : {', '.join(items)}]"
+        conv.add("assistant", memo)
+        body = self.lists.format_message(lst)
+        text_out = f"{accompanying_text}\n\n{body}" if accompanying_text else body
+        return Response(
+            text        = text_out,
+            action      = "render_list",
+            action_data = lst,
+        )
 
     # ── System prompt enrichi du contexte temporel ───────────────────────────
 

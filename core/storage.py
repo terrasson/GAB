@@ -96,6 +96,28 @@ CREATE TABLE IF NOT EXISTS reminders (
 CREATE INDEX IF NOT EXISTS idx_reminders_due
     ON reminders(fires_at)
     WHERE sent_at IS NULL AND cancelled_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS lists (
+    id          TEXT PRIMARY KEY,
+    group_id    TEXT NOT NULL,
+    creator_id  TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    closed_at   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS list_items (
+    list_id      TEXT NOT NULL,
+    item_index   INTEGER NOT NULL,
+    label        TEXT NOT NULL,
+    claimer_id   TEXT,
+    claimer_name TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (list_id, item_index),
+    FOREIGN KEY (list_id) REFERENCES lists(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_lists_group
+    ON lists(group_id, created_at DESC);
 """
 
 

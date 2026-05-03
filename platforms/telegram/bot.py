@@ -95,6 +95,7 @@ class TelegramPlatform(BasePlatform):
         app.add_handler(CommandHandler("members",      self._on_command))
         app.add_handler(CommandHandler("sondage",      self._on_command))
         app.add_handler(CommandHandler("rappel",       self._on_command))
+        app.add_handler(CommandHandler("liste",        self._on_command))
         app.add_handler(CallbackQueryHandler(self._on_button))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message))
         app.add_handler(ChatMemberHandler(self._on_chat_member, ChatMemberHandler.CHAT_MEMBER))
@@ -113,6 +114,11 @@ class TelegramPlatform(BasePlatform):
         # Vote sur un sondage : `vote:<poll_id>:<option_index>`
         if query.data and query.data.startswith("vote:"):
             await self._handle_vote_click(query)
+            return
+
+        # Claim d'un item de liste : `claim:<list_id>:<item_index>`
+        if query.data and query.data.startswith("claim:"):
+            await self._handle_claim_click(query)
             return
 
         # Sinon, callback générique : on réinjecte comme texte de commande
@@ -234,6 +240,15 @@ class TelegramPlatform(BasePlatform):
             )
             return
 
+        # Liste fraîchement créée : pareil, clavier inline pour les claims
+        if response.action == "render_list" and response.action_data:
+            await tg_msg.reply_text(
+                response.text,
+                parse_mode    = ParseMode.MARKDOWN,
+                reply_markup  = self._build_list_keyboard(response.action_data),
+            )
+            return
+
         # Réponse silencieuse : on n'envoie rien (utile pour le rejet whitelist
         # en groupe ou tout autre cas où Response.text est vide).
         if response.text:
@@ -339,3 +354,61 @@ class TelegramPlatform(BasePlatform):
             # "Message is not modified" si l'utilisateur reclique sur la même option
             if "not modified" not in str(exc).lower():
                 logger.warning("Edit du sondage impossible : %s", exc)
+
+    # ── Listes : rendu du clavier + traitement d'un clic de claim ─────────────
+
+    @staticmethod
+    def _build_list_keyboard(lst: dict) -> InlineKeyboardMarkup:
+        rows = []
+        for it in lst["items"]:
+            if it["claimer_id"]:
+                label = f"{it['label']}  ✅ {it['claimer_name'] or '?'}"
+            else:
+                label = f"{it['label']}  ◻️"
+            rows.append([InlineKeyboardButton(
+                label,
+                callback_data=f"claim:{lst['id']}:{it['index']}",
+            )])
+        return InlineKeyboardMarkup(rows)
+
+    async def _handle_claim_click(self, query) -> None:
+        try:
+            _, list_id, idx_str = query.data.split(":", 2)
+            item_index = int(idx_str)
+        except (ValueError, AttributeError):
+            return
+        user = query.from_user
+        lst, outcome = await self.agent.claim_list_item(
+            list_id    = list_id,
+            item_index = item_index,
+            user_id    = str(user.id),
+            user_name  = user.first_name or user.username or "",
+        )
+        if not lst:
+            return
+        # Toast d'information selon le résultat. show_alert=False = bandeau
+        # bref en haut de l'écran (non bloquant).
+        if outcome == "blocked":
+            blocker = ""
+            for it in lst["items"]:
+                if it["index"] == item_index and it["claimer_name"]:
+                    blocker = it["claimer_name"]
+                    break
+            await query.answer(
+                text=f"Déjà pris{' par ' + blocker if blocker else ''}.",
+                show_alert=False,
+            )
+            return  # rien à éditer, l'état n'a pas changé
+        elif outcome == "claimed":
+            await query.answer(text="✅ C'est noté.", show_alert=False)
+        elif outcome == "unclaimed":
+            await query.answer(text="◻️ Libéré.", show_alert=False)
+        try:
+            await query.message.edit_text(
+                self.agent.lists.format_message(lst),
+                parse_mode   = ParseMode.MARKDOWN,
+                reply_markup = self._build_list_keyboard(lst),
+            )
+        except Exception as exc:
+            if "not modified" not in str(exc).lower():
+                logger.warning("Edit de la liste impossible : %s", exc)
