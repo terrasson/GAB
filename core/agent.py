@@ -394,11 +394,13 @@ class GabAgent:
             question   = question or "Sondage",
             options    = options,
         )
-        # Trace dans la mémoire de groupe pour que le LLM sache qu'il a lancé le sondage
-        memo = (accompanying_text + " " if accompanying_text else "") + \
-               f"[Sondage lancé : {poll['question']} — options : {', '.join(options)}]"
-        conv.add("assistant", memo)
-        # Texte affiché aux humains : préambule du LLM (s'il y en a un) + sondage
+        # Mémoire conversationnelle : on stocke uniquement le préambule naturel du
+        # LLM (« Voilà votre sondage 🎩 »), pas un memo crocheté. Les anciens
+        # memos `[Sondage lancé : …]` étaient mimés textuellement par le LLM lors
+        # des actions suivantes, qui répondait `[Liste créée : …]` en texte au
+        # lieu d'invoquer create_list. Cf. commit ab17d41 + investigation
+        # 2026-05-03.
+        conv.add("assistant", accompanying_text or "Sondage lancé.")
         body = self.polls.format_message(poll)
         text_out = f"{accompanying_text}\n\n{body}" if accompanying_text else body
         return Response(
@@ -457,11 +459,9 @@ class GabAgent:
             (accompanying_text + "\n\n" if accompanying_text else "")
             + f"⏰ C'est noté. Je rappellerai *{message}* le {when_label}."
         )
-        # Trace dans la mémoire pour que le LLM sache qu'il a programmé le rappel
-        conv.add(
-            "assistant",
-            f"[Rappel programmé : {message} — {when_label}]"
-        )
+        # Mémoire conversationnelle : on stocke un acquittement naturel, pas
+        # un memo crocheté (cf. _exec_create_poll pour le contexte du fix).
+        conv.add("assistant", accompanying_text or "Rappel programmé.")
         return Response(text=confirm)
 
     def _exec_create_list(self, msg: Message, conv, tool_call, accompanying_text: str) -> Response:
@@ -484,9 +484,9 @@ class GabAgent:
             title      = title or "Liste",
             items      = items,
         )
-        memo = (accompanying_text + " " if accompanying_text else "") + \
-               f"[Liste créée : {lst['title']} — items : {', '.join(items)}]"
-        conv.add("assistant", memo)
+        # Mémoire conversationnelle : on stocke un acquittement naturel, pas
+        # un memo crocheté (cf. _exec_create_poll pour le contexte du fix).
+        conv.add("assistant", accompanying_text or "Liste créée.")
         body = self.lists.format_message(lst)
         text_out = f"{accompanying_text}\n\n{body}" if accompanying_text else body
         return Response(
