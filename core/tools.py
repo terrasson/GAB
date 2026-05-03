@@ -8,13 +8,32 @@ commandes slash en fallback).
 Règle d'or : la description d'un outil EST son contrat avec le LLM. C'est
 elle qui décide quand il sera appelé et avec quels arguments. Toute règle
 métier (« n'invente jamais d'options ») doit être dans la description.
+
+Note d'ingénierie : on observe parfois que certains LLM "simulent" un
+tool call en répondant en texte (« Liste créée : ... ») au lieu d'invoquer
+réellement la fonction. Pour décourager ce comportement, chaque
+description rappelle explicitement « tu DOIS invoquer cette fonction, pas
+décrire l'appel en texte ».
 """
+
+# Préambule commun rappelant qu'il faut INVOQUER, pas DÉCRIRE.
+_INVOKE_RULE = (
+    "IMPORTANT (contrat d'invocation) : pour utiliser cette fonction, tu DOIS "
+    "l'invoquer réellement via le mécanisme tool-calling de l'API. Tu ne dois "
+    "JAMAIS répondre en texte avec une phrase qui décrit l'appel "
+    "(« Sondage créé : … », « J'ai créé la liste », « Voici votre rappel : … »). "
+    "Le système GAB n'exécute aucune action à partir de ton texte — seul un vrai "
+    "tool-call structuré déclenche la création de l'objet et l'affichage des "
+    "boutons. Si tu hésites entre répondre en texte et invoquer la fonction, "
+    "et que tu as toutes les informations nécessaires, INVOQUE.\n\n"
+)
 
 CREATE_POLL_TOOL = {
     "type": "function",
     "function": {
         "name": "create_poll",
         "description": (
+            _INVOKE_RULE +
             "Crée un sondage à choix multiples dans le groupe Telegram courant pour "
             "aider le groupe à décider entre plusieurs options proposées par ses membres "
             "(restaurant, sortie, date, activité, etc.).\n\n"
@@ -68,6 +87,7 @@ CREATE_REMINDER_TOOL = {
     "function": {
         "name": "create_reminder",
         "description": (
+            _INVOKE_RULE +
             "Programme un rappel à envoyer dans le groupe (ou en DM si on est en "
             "conversation privée) à une date/heure précise. Utile quand un membre "
             "demande « rappelle-nous », « préviens-moi », « n'oublions pas que… ».\n\n"
@@ -120,6 +140,7 @@ CREATE_LIST_TOOL = {
     "function": {
         "name": "create_list",
         "description": (
+            _INVOKE_RULE +
             "Crée une liste partagée modifiable dans le groupe Telegram courant. "
             "Cas d'usage typiques : « qui amène quoi pour le BBQ ? », liste de "
             "courses, partage de tâches, qui paie quoi. Les membres cliquent sur "

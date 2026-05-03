@@ -349,6 +349,12 @@ class GabAgent:
                      "Vérifiez que le backend configuré est accessible."
             )
 
+        # Diagnostic : ce que le LLM a réellement retourné. Permet de débugger
+        # un cas où le LLM "simule" un tool call en texte au lieu d'invoquer.
+        tool_names = [tc.name for tc in result.tool_calls] or ["<aucun>"]
+        text_preview = (result.text or "")[:120].replace("\n", " ")
+        logger.info("LLM result : tools=%s | text=%r", tool_names, text_preview)
+
         # Le LLM a-t-il décidé d'invoquer un outil ?
         for tc in result.tool_calls:
             if tc.name == "create_poll":
