@@ -14,7 +14,7 @@ def build_app(whatsapp_platform=None, verify_token: str = "") -> FastAPI:
     Construit l'application FastAPI.
     whatsapp_platform : instance de WhatsAppPlatform (optionnel).
     """
-    app = FastAPI(title="GAB — Grand Assistant de Bureau", version="1.0.0")
+    app = FastAPI(title="GAB — concierge-agent pour groupes", version="1.0.0")
 
     # ── Webhook WhatsApp ──────────────────────────────────────────────────────
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-GAB — Grand Assistant de Bureau
-Majordome multi-plateforme alimenté par le LLM Hermes (Ollama).
+GAB — concierge-agent pour groupes
+Bot multi-plateforme, LLM-agnostique.
 
 Plateformes supportées :
   • Telegram  (polling)

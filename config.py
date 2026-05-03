@@ -1,4 +1,4 @@
-"""Configuration centralisée de GAB — Grand Assistant de Bureau."""
+"""Configuration centralisée de GAB."""
 
 import os
 from dataclasses import dataclass, field

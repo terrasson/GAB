@@ -2,7 +2,7 @@
   <img src="assets/logo.png" alt="GAB — Concierge IA" width="240"/>
 </p>
 
-# 🎩 GAB — Grand Assistant de Bureau
+# 🎩 GAB — concierge-agent pour groupes
 
 > **Concierge-agent IA pour groupes humains** — multi-plateforme (Telegram, WhatsApp, Discord), LLM-agnostique (Ollama, OpenAI, DeepSeek, Mistral, Claude, Manifest…).
 
