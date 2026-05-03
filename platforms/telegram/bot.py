@@ -30,6 +30,41 @@ logger = logging.getLogger("GAB.telegram")
 WAKE_RE = re.compile(r"(?:^|\s)[#@](\w+)", re.UNICODE)
 
 
+# ── Welcome flow (palier 1.7) ────────────────────────────────────────────────
+# Permissions admin demandées via le lien magique. Couvrent l'usage typique
+# (invitations, épinglage, modération légère).
+ADMIN_PERMS = "delete_messages+pin_messages+invite_users+manage_chat"
+
+ADMIN_WELCOME = (
+    "🎩 *Bonjour !* Merci de m'avoir ajouté avec les permissions admin.\n\n"
+    "Je suis votre concierge-agent : j'aide votre groupe à s'organiser "
+    "(sondages, rappels, listes…). Quelques exemples pour démarrer :\n\n"
+    "• `/sondage Restaurant ? Pizza | Sushi | Burger` — vote en 1 clic\n"
+    "• `/rappel 2026-05-08 19:00 RDV chez Mario` — notification programmée\n"
+    "• `/liste BBQ : Steaks | Salade | Vin` — liste partagée modifiable\n"
+    "• `/help` — toutes les commandes\n\n"
+    "Vous pouvez aussi me parler naturellement en mentionnant `@gab` ou avec "
+    "le hashtag `#gab` — par exemple : *« @gab fais un sondage pour le resto »*."
+)
+
+MEMBER_WELCOME_TEMPLATE = (
+    "🎩 *Bonjour !* Merci de m'avoir ajouté à ce groupe.\n\n"
+    "Je suis votre concierge-agent (sondages, rappels, listes partagées…), "
+    "mais je suis pour l'instant ajouté en *simple membre*. Pour fonctionner "
+    "pleinement (gérer les invitations, épingler, etc.), j'ai besoin d'être "
+    "*administrateur* avec quelques permissions.\n\n"
+    "Demandez à un admin du groupe de me promouvoir, ou utilisez ce lien "
+    "magique qui pré-coche les bonnes permissions :\n"
+    "[➡️ Promouvoir GAB en admin](https://t.me/{bot_username}?startgroup=true&admin={perms})\n\n"
+    "En attendant, vous pouvez tester `/help` pour voir mes commandes."
+)
+
+PROMOTION_THANKS = (
+    "🎩 Merci pour la promotion ! Je suis maintenant admin avec les bonnes "
+    "permissions — toutes mes fonctionnalités sont disponibles. `/help` pour les voir."
+)
+
+
 class TelegramPlatform(BasePlatform):
     """Plateforme Telegram : polling + gestion des groupes natifs."""
 
@@ -171,21 +206,69 @@ class TelegramPlatform(BasePlatform):
             logger.info("➖ Membre %s (id=%s) a quitté %s", user.first_name, user.id, chat.id)
 
     async def _on_my_chat_member(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        """Détecte quand GAB lui-même est ajouté/retiré d'un groupe."""
+        """Détecte quand GAB lui-même est ajouté/retiré d'un groupe.
+
+        Trois transitions intéressantes (palier 1.7 — welcome flow) :
+        - left/kicked → administrator : welcome admin (toutes les commandes dispo)
+        - left/kicked → member        : welcome simple membre + lien magique
+                                        pour promotion en admin
+        - member      → administrator : remerciements brefs (promotion réussie)
+        """
         mcm = update.my_chat_member
         if not mcm:
             return
         chat = mcm.chat
         new_status = mcm.new_chat_member.status
-        if new_status in ("member", "administrator") and chat.type in ("group", "supergroup"):
-            self.agent.groups.register_member(
-                group_id   = str(chat.id),
-                group_name = chat.title or "",
-                platform   = self.name,
-                user_id    = str(mcm.from_user.id),
-                username   = mcm.from_user.username or mcm.from_user.first_name or "",
-            )
-            logger.info("🎩 GAB ajouté au groupe %s (%s) — statut: %s", chat.title, chat.id, new_status)
+        old_status = mcm.old_chat_member.status if mcm.old_chat_member else "left"
+
+        was_in = old_status in ("member", "administrator", "creator", "restricted")
+        is_in  = new_status in ("member", "administrator", "creator", "restricted")
+        is_group = chat.type in ("group", "supergroup")
+
+        if not is_in or not is_group:
+            return
+
+        # Enregistre la présence (palier 1.1)
+        self.agent.groups.register_member(
+            group_id   = str(chat.id),
+            group_name = chat.title or "",
+            platform   = self.name,
+            user_id    = str(mcm.from_user.id),
+            username   = mcm.from_user.username or mcm.from_user.first_name or "",
+        )
+        logger.info("🎩 GAB dans %s (%s) : %s → %s",
+                    chat.title, chat.id, old_status, new_status)
+
+        # Welcome flow
+        try:
+            if not was_in:
+                # Premier ajout au groupe
+                if new_status == "administrator":
+                    await ctx.bot.send_message(
+                        chat_id    = chat.id,
+                        text       = ADMIN_WELCOME,
+                        parse_mode = ParseMode.MARKDOWN,
+                    )
+                else:
+                    await ctx.bot.send_message(
+                        chat_id    = chat.id,
+                        text       = MEMBER_WELCOME_TEMPLATE.format(
+                            bot_username = ctx.bot.username,
+                            perms        = ADMIN_PERMS,
+                        ),
+                        parse_mode = ParseMode.MARKDOWN,
+                        disable_web_page_preview = True,
+                    )
+            elif old_status == "member" and new_status == "administrator":
+                # Promotion en cours de route
+                await ctx.bot.send_message(
+                    chat_id    = chat.id,
+                    text       = PROMOTION_THANKS,
+                    parse_mode = ParseMode.MARKDOWN,
+                )
+        except Exception as exc:
+            # Ne pas faire crasher le handler pour un message de bienvenue raté
+            logger.warning("Welcome message non envoyé dans %s : %s", chat.id, exc)
 
     # ── Dispatch central ──────────────────────────────────────────────────────
 
