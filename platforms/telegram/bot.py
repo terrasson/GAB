@@ -5,7 +5,7 @@ Utilise python-telegram-bot en mode polling.
 
 import re
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import (
     ApplicationBuilder,
@@ -22,8 +22,12 @@ from core.agent import GabAgent, Message
 
 logger = logging.getLogger("GAB.telegram")
 
-# Hashtag : `#` puis un mot (lettres/chiffres/underscore, accentué inclus en \w UNICODE)
-HASHTAG_RE = re.compile(r"#(\w+)", re.UNICODE)
+# Mot d'éveil : `#gab`, `@gab`, `#ia`, `@ia`, … (le `@` couvre l'intuition humaine
+# qui veut interpeller GAB comme une mention même quand Telegram ne le reconnaît
+# pas comme une vraie mention — `@gab` n'est pas le username exact du bot).
+# Le préfixe est exigé en début de message ou après un espace, pour éviter les
+# faux positifs du type "email@gab.com".
+WAKE_RE = re.compile(r"(?:^|\s)[#@](\w+)", re.UNICODE)
 
 
 class TelegramPlatform(BasePlatform):
@@ -215,7 +219,17 @@ class TelegramPlatform(BasePlatform):
         # Réponse silencieuse : on n'envoie rien (utile pour le rejet whitelist
         # en groupe ou tout autre cas où Response.text est vide).
         if response.text:
-            await tg_msg.reply_text(response.text, parse_mode=ParseMode.MARKDOWN)
+            # Si GAB pose une question dans un groupe, on attache ForceReply pour
+            # nudger l'utilisateur à répondre via la fonction Reply de Telegram.
+            # Sans ça, en mode passif, sa réponse libre serait ignorée.
+            reply_markup = None
+            if is_group and response.text.rstrip().endswith("?"):
+                reply_markup = ForceReply(selective=True)
+            await tg_msg.reply_text(
+                response.text,
+                parse_mode   = ParseMode.MARKDOWN,
+                reply_markup = reply_markup,
+            )
 
         # Génération automatique d'un lien si on est dans un groupe
         if (
@@ -255,10 +269,10 @@ class TelegramPlatform(BasePlatform):
                     if mention.lower() == f"@{bot_username}":
                         return True
 
-        # Hashtag d'éveil (#gab, #ia, …)
+        # Mot d'éveil (#gab, @gab, #ia, @ia, …) — match `@` ou `#` indifféremment
         wake_tags = set(self.agent.cfg.WAKE_TAGS or [])
         if wake_tags:
-            for match in HASHTAG_RE.finditer(text):
+            for match in WAKE_RE.finditer(text):
                 if match.group(1).lower() in wake_tags:
                     return True
 
