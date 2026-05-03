@@ -122,12 +122,16 @@ class GabAgent:
         - Si AUCUNE liste blanche n'est configurée → tout passe (mode dev/perso).
         - Sinon, message autorisé SI :
           * son user_id est dans ALLOWED_USERS (en `<id>` ou `<platform>:<id>`), OU
-          * son group_id est dans ALLOWED_GROUPS.
+          * son group_id est dans ALLOWED_GROUPS (statique, .env), OU
+          * son group_id est dans la whitelist dynamique (groupes ajoutés à
+            l'exécution par un user de ALLOWED_USERS — voir _on_my_chat_member).
         """
         cfg = self.cfg
         if not cfg.ALLOWED_USERS and not cfg.ALLOWED_GROUPS:
             return True
         if msg.group_id and msg.group_id in cfg.ALLOWED_GROUPS:
+            return True
+        if msg.group_id and self.groups.is_whitelisted(msg.group_id):
             return True
         user_keys = {msg.user_id, f"{msg.platform}:{msg.user_id}"}
         return any(k in cfg.ALLOWED_USERS for k in user_keys)

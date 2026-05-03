@@ -239,6 +239,21 @@ class TelegramPlatform(BasePlatform):
         logger.info("🎩 GAB dans %s (%s) : %s → %s",
                     chat.title, chat.id, old_status, new_status)
 
+        # Auto-whitelist (palier 1.7+) : si l'inviteur est un user de confiance
+        # (ALLOWED_USERS), on whitelist automatiquement le groupe pour que tous
+        # ses membres puissent utiliser GAB. Évite d'avoir à éditer .env à la
+        # main pour chaque nouveau groupe créé par l'admin.
+        if not was_in:
+            inviter_id = str(mcm.from_user.id)
+            inviter_keys = {inviter_id, f"{self.name}:{inviter_id}"}
+            allowed_users = self.agent.cfg.ALLOWED_USERS
+            if allowed_users and any(k in allowed_users for k in inviter_keys):
+                self.agent.groups.whitelist(
+                    group_id = str(chat.id),
+                    platform = self.name,
+                    added_by = inviter_id,
+                )
+
         # Welcome flow
         try:
             if not was_in:

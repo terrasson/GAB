@@ -143,6 +143,40 @@ class GroupManager:
             rows = c.execute("SELECT id FROM groups").fetchall()
         return [self.get(r["id"]) for r in rows]
 
+    # ── Whitelist dynamique ──────────────────────────────────────────────────
+    # Quand un user de confiance (ALLOWED_USERS) ajoute GAB à un groupe, ce
+    # groupe est inscrit ici → tous ses membres peuvent utiliser GAB. Évite
+    # à l'admin d'éditer `.env` à la main pour chaque nouveau groupe.
+
+    def whitelist(self, group_id: str, platform: str, added_by: str) -> bool:
+        """Inscrit un groupe à la whitelist dynamique. Idempotent."""
+        with connection() as c:
+            cur = c.execute(
+                "INSERT OR IGNORE INTO group_whitelist "
+                "(group_id, platform, added_by, added_at) VALUES (?, ?, ?, ?)",
+                (group_id, platform, added_by, _now()),
+            )
+        added = cur.rowcount > 0
+        if added:
+            logger.info("✅ Groupe %s auto-whitelisté par %s", group_id, added_by)
+        return added
+
+    def is_whitelisted(self, group_id: str) -> bool:
+        with connection() as c:
+            row = c.execute(
+                "SELECT 1 FROM group_whitelist WHERE group_id=?",
+                (group_id,),
+            ).fetchone()
+        return row is not None
+
+    def unwhitelist(self, group_id: str) -> bool:
+        with connection() as c:
+            cur = c.execute(
+                "DELETE FROM group_whitelist WHERE group_id=?",
+                (group_id,),
+            )
+        return cur.rowcount > 0
+
     # ── Helpers ──────────────────────────────────────────────────────────────
 
     @staticmethod

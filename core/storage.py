@@ -118,6 +118,13 @@ CREATE TABLE IF NOT EXISTS list_items (
 
 CREATE INDEX IF NOT EXISTS idx_lists_group
     ON lists(group_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS group_whitelist (
+    group_id    TEXT PRIMARY KEY,
+    platform    TEXT NOT NULL,
+    added_by    TEXT NOT NULL,
+    added_at    TEXT NOT NULL
+);
 """
 
 
