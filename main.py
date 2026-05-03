@@ -16,6 +16,7 @@ import uvicorn
 
 from config import Config
 from core.agent import GabAgent
+from core.reminders import ReminderScheduler
 from platforms.telegram import TelegramPlatform
 from platforms.whatsapp import WhatsAppPlatform
 from platforms.discord import DiscordPlatform
@@ -74,24 +75,43 @@ async def run() -> None:
     )
     uvi_server  = uvicorn.Server(uvi_config)
 
+    # ── Scheduler de rappels ──────────────────────────────────────────────────
+    # On dispatche les rappels via la plateforme idoine (lookup par nom).
+    platforms_by_name = {p.name: p for p in active_platforms}
+
+    async def reminder_dispatch(platform: str, target_chat: str, text: str) -> None:
+        p = platforms_by_name.get(platform)
+        if not p:
+            logger.error("Plateforme '%s' inconnue pour dispatch rappel", platform)
+            return
+        await p.send_message(target_chat, text)
+
+    scheduler = ReminderScheduler(agent.reminders, reminder_dispatch)
+    logger.info("✅ Scheduler de rappels prêt")
+
     logger.info("🎩 GAB démarre sur %d plateforme(s)…", len(active_platforms))
 
-    # Démarrage de toutes les plateformes en parallèle
+    # Démarrage de toutes les plateformes + scheduler + serveur HTTP en parallèle
     tasks = [asyncio.create_task(p.start()) for p in active_platforms]
+    tasks.append(asyncio.create_task(scheduler.run()))
     tasks.append(asyncio.create_task(uvi_server.serve()))
 
     # Arrêt propre sur SIGINT / SIGTERM
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, lambda: asyncio.ensure_future(_shutdown(active_platforms, tasks)))
+        loop.add_signal_handler(sig, lambda: asyncio.ensure_future(
+            _shutdown(active_platforms, tasks, scheduler)
+        ))
 
     await asyncio.gather(*tasks, return_exceptions=True)
     await agent.close()
     logger.info("🎩 GAB arrêté. Au revoir, maître.")
 
 
-async def _shutdown(platforms, tasks) -> None:
+async def _shutdown(platforms, tasks, scheduler=None) -> None:
     logger.info("🛑 Arrêt en cours…")
+    if scheduler is not None:
+        scheduler.stop()
     for p in platforms:
         try:
             await p.stop()

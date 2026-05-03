@@ -80,6 +80,22 @@ CREATE TABLE IF NOT EXISTS poll_votes (
 
 CREATE INDEX IF NOT EXISTS idx_polls_group
     ON polls(group_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS reminders (
+    id            TEXT PRIMARY KEY,
+    platform      TEXT NOT NULL,
+    target_chat   TEXT NOT NULL,
+    creator_id    TEXT NOT NULL,
+    fires_at      TEXT NOT NULL,
+    message       TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    sent_at       TEXT,
+    cancelled_at  TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_reminders_due
+    ON reminders(fires_at)
+    WHERE sent_at IS NULL AND cancelled_at IS NULL;
 """
 
 

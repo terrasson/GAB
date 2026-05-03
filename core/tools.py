@@ -63,6 +63,59 @@ CREATE_POLL_TOOL = {
     },
 }
 
-# Liste exposée par défaut en groupe (s'enrichira aux paliers suivants :
-# create_reminder, create_list, create_event, …).
-GROUP_TOOLS: list[dict] = [CREATE_POLL_TOOL]
+CREATE_REMINDER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "create_reminder",
+        "description": (
+            "Programme un rappel à envoyer dans le groupe (ou en DM si on est en "
+            "conversation privée) à une date/heure précise. Utile quand un membre "
+            "demande « rappelle-nous », « préviens-moi », « n'oublions pas que… ».\n\n"
+            "RÈGLE ABSOLUE : tu n'inventes JAMAIS la date/heure ni le contenu du "
+            "rappel. Les deux viennent UNIQUEMENT de ce que l'utilisateur a écrit "
+            "dans l'échange en cours. Si la demande est ambiguë (« rappelle-nous » "
+            "sans heure, ou « demain » sans précision d'heure), tu réponds en texte "
+            "(pas d'appel à cette fonction) en demandant la précision manquante : "
+            "« À quelle heure veux-tu que je rappelle ? » ou « Pour quelle date ? ».\n\n"
+            "PÉRIMÈTRE TEMPOREL : la date et le contenu doivent venir de l'échange "
+            "immédiat, pas de messages anciens piochés dans la mémoire du groupe. "
+            "Si l'historique contient un sujet candidat mais qu'il n'est pas redonné "
+            "maintenant, tu demandes confirmation avant d'appeler create_reminder.\n\n"
+            "FORMAT DE LA DATE : tu convertis le langage naturel français (« demain "
+            "19h », « vendredi 8h », « dans 2 heures », « le 8 mai à 19h ») en ISO "
+            "8601 timezone-aware. Fuseau par défaut : Europe/Paris (`+02:00` en "
+            "heure d'été — d'avril à octobre — sinon `+01:00`). Tu utilises la date "
+            "ET l'heure courantes injectées dans le system prompt comme référence "
+            "pour résoudre les expressions relatives.\n\n"
+            "La date doit toujours être dans le futur. Si l'utilisateur donne une "
+            "date passée, tu lui fais remarquer en texte sans appeler la fonction."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "fires_at": {
+                    "type": "string",
+                    "description": (
+                        "Date/heure du rappel au format ISO 8601 timezone-aware. "
+                        "Ex : « 2026-05-04T19:00:00+02:00 »."
+                    ),
+                },
+                "message": {
+                    "type": "string",
+                    "description": (
+                        "Texte court et clair du rappel, reprenant fidèlement ce "
+                        "que l'utilisateur a demandé de rappeler. Ex : « RDV chez "
+                        "Mario », « Anniversaire d'Audrey », « Réserver le train »."
+                    ),
+                },
+            },
+            "required": ["fires_at", "message"],
+        },
+    },
+}
+
+
+# Outils exposés selon le contexte. En groupe : tout ; en DM : uniquement les
+# outils qui ont du sens pour un user seul (les sondages exigent un groupe).
+GROUP_TOOLS: list[dict] = [CREATE_POLL_TOOL, CREATE_REMINDER_TOOL]
+DM_TOOLS:    list[dict] = [CREATE_REMINDER_TOOL]

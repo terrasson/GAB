@@ -14,7 +14,8 @@ from llm import make_llm_client
 from core.memory import Memory
 from core.group_manager import GroupManager
 from core.polls import PollManager, parse_sondage
-from core.tools import GROUP_TOOLS
+from core.reminders import ReminderManager, parse_rappel, format_fires_at_fr
+from core.tools import GROUP_TOOLS, DM_TOOLS
 
 logger = logging.getLogger("GAB.agent")
 
@@ -69,14 +70,16 @@ class GabAgent:
         "/status":      "_cmd_status",
         "/members":     "_cmd_members",
         "/sondage":     "_cmd_sondage",
+        "/rappel":      "_cmd_rappel",
     }
 
     def __init__(self, cfg: Config):
-        self.cfg    = cfg
-        self.memory = Memory()
-        self.groups = GroupManager()
-        self.polls  = PollManager()
-        self.llm    = make_llm_client(cfg)
+        self.cfg       = cfg
+        self.memory    = Memory()
+        self.groups    = GroupManager()
+        self.polls     = PollManager()
+        self.reminders = ReminderManager()
+        self.llm       = make_llm_client(cfg)
 
     # ── Point d'entrée principal ─────────────────────────────────────────────
 
@@ -152,7 +155,8 @@ class GabAgent:
             "`/clear`                — Effacer l'historique de la conversation\n"
             "`/status`               — État du LLM et des plateformes actives\n"
             "`/members`              — Lister les IDs des membres connus du groupe\n"
-            "`/sondage <Q?> <O1>|<O2>|<O3>` — Lancer un vote multi-options\n\n"
+            "`/sondage <Q?> <O1>|<O2>|<O3>` — Lancer un vote multi-options\n"
+            "`/rappel <YYYY-MM-DD> <HH:MM> <message>` — Programmer un rappel\n\n"
             "💬 Vous pouvez aussi m'écrire librement."
         ))
 
@@ -255,6 +259,23 @@ class GabAgent:
         """Point d'entrée appelé par les plateformes sur clic de bouton."""
         return self.polls.vote(poll_id, user_id, option_index, username=username)
 
+    async def _cmd_rappel(self, msg: Message, arg: str) -> Response:
+        when, message, error = parse_rappel(arg)
+        if error:
+            return Response(text=error)
+        target_chat = msg.group_id or msg.user_id
+        reminder = self.reminders.create(
+            platform    = msg.platform,
+            target_chat = target_chat,
+            creator_id  = msg.user_id,
+            fires_at    = when,
+            message     = message,
+        )
+        when_label = format_fires_at_fr(reminder["fires_at"])
+        return Response(
+            text=f"⏰ C'est noté. Je rappellerai *{message}* le {when_label}."
+        )
+
     async def _cmd_members(self, msg: Message, _: str) -> Response:
         if not msg.group_id:
             return Response(text="ℹ️ `/members` doit être utilisé dans un groupe.")
@@ -275,10 +296,10 @@ class GabAgent:
         # En groupe : on enregistre l'auteur pour que le LLM sache qui parle
         conv.add("user", text, author=msg.username)
 
-        # En groupe, on expose les outils de coordination (create_poll, …).
-        # En DM, pas d'outils : la conversation 1-to-1 n'a pas vocation à créer
-        # des sondages de groupe.
-        tools = GROUP_TOOLS if msg.group_id else None
+        # Sélection des outils selon le contexte. En groupe : tout (sondages,
+        # rappels, …). En DM : seulement les outils qui ont du sens pour un user
+        # seul (rappels, mais pas sondages — un sondage exige un groupe).
+        tools = GROUP_TOOLS if msg.group_id else DM_TOOLS
 
         try:
             result = await self.llm.chat(
@@ -297,6 +318,8 @@ class GabAgent:
         for tc in result.tool_calls:
             if tc.name == "create_poll":
                 return self._exec_create_poll(msg, conv, tc, result.text)
+            if tc.name == "create_reminder":
+                return self._exec_create_reminder(msg, conv, tc, result.text)
             logger.warning("Tool call inconnu ignoré : %s", tc.name)
 
         # Pas d'outil : réponse texte classique
@@ -340,6 +363,63 @@ class GabAgent:
             action      = "render_poll",
             action_data = poll,
         )
+
+    def _exec_create_reminder(self, msg: Message, conv, tool_call, accompanying_text: str) -> Response:
+        """Programme un rappel demandé par le LLM via tool calling."""
+        args     = tool_call.arguments or {}
+        fires_at = (args.get("fires_at") or "").strip()
+        message  = (args.get("message") or "").strip()
+
+        # Validation : ISO parseable, timezone-aware, dans le futur
+        try:
+            when = datetime.fromisoformat(fires_at)
+        except (ValueError, TypeError):
+            fallback = (
+                accompanying_text
+                or "Je n'ai pas compris la date du rappel. À quelle date et heure exactement ?"
+            )
+            conv.add("assistant", fallback)
+            return Response(text=fallback)
+
+        if when.tzinfo is None:
+            # On considère Europe/Paris si le LLM a oublié l'offset
+            when = when.replace(tzinfo=_TZ_PARIS)
+
+        if when <= datetime.now(_TZ_PARIS):
+            fallback = (
+                accompanying_text
+                or "Cette date est déjà passée. Pour quand veux-tu le rappel ?"
+            )
+            conv.add("assistant", fallback)
+            return Response(text=fallback)
+
+        if not message:
+            fallback = (
+                accompanying_text
+                or "De quoi veux-tu que je te rappelle exactement ?"
+            )
+            conv.add("assistant", fallback)
+            return Response(text=fallback)
+
+        target_chat = msg.group_id or msg.user_id
+        reminder = self.reminders.create(
+            platform    = msg.platform,
+            target_chat = target_chat,
+            creator_id  = msg.user_id,
+            fires_at    = when,
+            message     = message,
+        )
+        when_label = format_fires_at_fr(reminder["fires_at"])
+        confirm = (
+            (accompanying_text + "\n\n" if accompanying_text else "")
+            + f"⏰ C'est noté. Je rappellerai *{message}* le {when_label}."
+        )
+        # Trace dans la mémoire pour que le LLM sache qu'il a programmé le rappel
+        conv.add(
+            "assistant",
+            f"[Rappel programmé : {message} — {when_label}]"
+        )
+        return Response(text=confirm)
 
     # ── System prompt enrichi du contexte temporel ───────────────────────────
 

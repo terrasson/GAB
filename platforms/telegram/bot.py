@@ -63,6 +63,23 @@ class TelegramPlatform(BasePlatform):
         await self._app.shutdown()
         logger.info("Telegram — arrêté.")
 
+    async def send_message(self, target_chat: str, text: str) -> None:
+        """Envoie un message texte à un chat Telegram (groupe ou DM).
+
+        Utilisé par le scheduler de rappels pour livrer les notifications à
+        l'heure dite. `target_chat` est l'identifiant Telegram numérique du
+        groupe (-100…) ou de l'utilisateur en DM.
+        """
+        try:
+            await self._app.bot.send_message(
+                chat_id    = int(target_chat),
+                text       = text,
+                parse_mode = ParseMode.MARKDOWN,
+            )
+        except Exception as exc:
+            logger.error("Échec envoi Telegram → %s : %s", target_chat, exc)
+            raise
+
     # ── Handlers ─────────────────────────────────────────────────────────────
 
     def _register_handlers(self) -> None:
@@ -77,6 +94,7 @@ class TelegramPlatform(BasePlatform):
         app.add_handler(CommandHandler("status",       self._on_command))
         app.add_handler(CommandHandler("members",      self._on_command))
         app.add_handler(CommandHandler("sondage",      self._on_command))
+        app.add_handler(CommandHandler("rappel",       self._on_command))
         app.add_handler(CallbackQueryHandler(self._on_button))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message))
         app.add_handler(ChatMemberHandler(self._on_chat_member, ChatMemberHandler.CHAT_MEMBER))

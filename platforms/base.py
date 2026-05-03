@@ -25,3 +25,14 @@ class BasePlatform(ABC):
     def name(self) -> str:
         """Nom lisible de la plateforme."""
         ...
+
+    async def send_message(self, target_chat: str, text: str) -> None:
+        """Envoie un message texte à un chat (groupe ou DM).
+
+        Utilisé par le scheduler de rappels et par tout dispatcher asynchrone.
+        Implémentation par défaut : NotImplementedError. Les plateformes
+        actives doivent surcharger cette méthode. Les plateformes non encore
+        utilisées en prod (Discord pour le moment) peuvent garder le défaut —
+        le scheduler loggue l'erreur et passe au rappel suivant.
+        """
+        raise NotImplementedError(f"{self.name}: send_message non implémenté")
