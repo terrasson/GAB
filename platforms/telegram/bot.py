@@ -72,6 +72,7 @@ class TelegramPlatform(BasePlatform):
         app.add_handler(CommandHandler("clear",        self._on_command))
         app.add_handler(CommandHandler("status",       self._on_command))
         app.add_handler(CommandHandler("members",      self._on_command))
+        app.add_handler(CommandHandler("sondage",      self._on_command))
         app.add_handler(CallbackQueryHandler(self._on_button))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message))
         app.add_handler(ChatMemberHandler(self._on_chat_member, ChatMemberHandler.CHAT_MEMBER))
@@ -86,7 +87,13 @@ class TelegramPlatform(BasePlatform):
     async def _on_button(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         query = update.callback_query
         await query.answer()
-        # On réinjecte le callback_data comme texte de commande
+
+        # Vote sur un sondage : `vote:<poll_id>:<option_index>`
+        if query.data and query.data.startswith("vote:"):
+            await self._handle_vote_click(query)
+            return
+
+        # Sinon, callback générique : on réinjecte comme texte de commande
         fake_msg = Message(
             platform   = self.name,
             user_id    = str(query.from_user.id),
@@ -195,6 +202,16 @@ class TelegramPlatform(BasePlatform):
         await ctx.bot.send_chat_action(chat_id=chat.id, action=ChatAction.TYPING)
 
         response = await self.agent.handle(msg)
+
+        # Sondage fraîchement créé : on attache le clavier inline et c'est tout
+        if response.action == "render_poll" and response.action_data:
+            await tg_msg.reply_text(
+                response.text,
+                parse_mode    = ParseMode.MARKDOWN,
+                reply_markup  = self._build_poll_keyboard(response.action_data),
+            )
+            return
+
         # Réponse silencieuse : on n'envoie rien (utile pour le rejet whitelist
         # en groupe ou tout autre cas où Response.text est vide).
         if response.text:
@@ -251,3 +268,42 @@ class TelegramPlatform(BasePlatform):
                 return True
 
         return False
+
+    # ── Sondages : rendu du clavier + traitement d'un clic de vote ────────────
+
+    @staticmethod
+    def _build_poll_keyboard(poll: dict) -> InlineKeyboardMarkup:
+        rows = [
+            [InlineKeyboardButton(
+                f"{opt['label']}  ({opt['votes']})",
+                callback_data=f"vote:{poll['id']}:{opt['index']}",
+            )]
+            for opt in poll["options"]
+        ]
+        return InlineKeyboardMarkup(rows)
+
+    async def _handle_vote_click(self, query) -> None:
+        try:
+            _, poll_id, idx_str = query.data.split(":", 2)
+            option_index = int(idx_str)
+        except (ValueError, AttributeError):
+            return
+        user = query.from_user
+        poll = await self.agent.vote(
+            poll_id      = poll_id,
+            user_id      = str(user.id),
+            option_index = option_index,
+            username     = user.username or user.first_name or "",
+        )
+        if not poll:
+            return
+        try:
+            await query.message.edit_text(
+                self.agent.polls.format_message(poll),
+                parse_mode   = ParseMode.MARKDOWN,
+                reply_markup = self._build_poll_keyboard(poll),
+            )
+        except Exception as exc:
+            # "Message is not modified" si l'utilisateur reclique sur la même option
+            if "not modified" not in str(exc).lower():
+                logger.warning("Edit du sondage impossible : %s", exc)

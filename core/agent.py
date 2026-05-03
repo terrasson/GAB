@@ -13,6 +13,8 @@ from config import Config
 from llm import make_llm_client
 from core.memory import Memory
 from core.group_manager import GroupManager
+from core.polls import PollManager, parse_sondage
+from core.tools import GROUP_TOOLS
 
 logger = logging.getLogger("GAB.agent")
 
@@ -66,12 +68,14 @@ class GabAgent:
         "/clear":       "_cmd_clear",
         "/status":      "_cmd_status",
         "/members":     "_cmd_members",
+        "/sondage":     "_cmd_sondage",
     }
 
     def __init__(self, cfg: Config):
         self.cfg    = cfg
         self.memory = Memory()
         self.groups = GroupManager()
+        self.polls  = PollManager()
         self.llm    = make_llm_client(cfg)
 
     # ── Point d'entrée principal ─────────────────────────────────────────────
@@ -147,7 +151,8 @@ class GabAgent:
             "`/summary`              — Résumer la conversation récente\n"
             "`/clear`                — Effacer l'historique de la conversation\n"
             "`/status`               — État du LLM et des plateformes actives\n"
-            "`/members`              — Lister les IDs des membres connus du groupe\n\n"
+            "`/members`              — Lister les IDs des membres connus du groupe\n"
+            "`/sondage <Q?> <O1>|<O2>|<O3>` — Lancer un vote multi-options\n\n"
             "💬 Vous pouvez aussi m'écrire librement."
         ))
 
@@ -198,7 +203,7 @@ class GabAgent:
             messages=[{"role": "user", "content": summary_prompt}],
             system=self._build_system_prompt(),
         )
-        return Response(text=f"📝 *Résumé de la conversation :*\n\n{result}")
+        return Response(text=f"📝 *Résumé de la conversation :*\n\n{result.text}")
 
     async def _cmd_clear(self, msg: Message, _: str) -> Response:
         self.memory.clear(msg.platform, msg.user_id, msg.group_id)
@@ -218,6 +223,37 @@ class GabAgent:
             f"  • Discord  : {'✅' if cfg.DISCORD_ENABLED else '❌'}",
         ]
         return Response(text="\n".join(lines))
+
+    async def _cmd_sondage(self, msg: Message, arg: str) -> Response:
+        if not msg.group_id:
+            return Response(text="ℹ️ `/sondage` ne fonctionne qu'en groupe.")
+        question, options = parse_sondage(arg)
+        if len(options) < 2:
+            return Response(text=(
+                "Usage : `/sondage Question ? Option1 | Option2 | Option3`\n"
+                "Au moins 2 options sont requises, séparées par `|`."
+            ))
+        poll = self.polls.create(
+            group_id   = msg.group_id,
+            creator_id = msg.user_id,
+            question   = question or "Sondage",
+            options    = options,
+        )
+        return Response(
+            text        = self.polls.format_message(poll),
+            action      = "render_poll",
+            action_data = poll,
+        )
+
+    async def vote(
+        self,
+        poll_id: str,
+        user_id: str,
+        option_index: int,
+        username: str = "",
+    ) -> dict | None:
+        """Point d'entrée appelé par les plateformes sur clic de bouton."""
+        return self.polls.vote(poll_id, user_id, option_index, username=username)
 
     async def _cmd_members(self, msg: Message, _: str) -> Response:
         if not msg.group_id:
@@ -239,19 +275,71 @@ class GabAgent:
         # En groupe : on enregistre l'auteur pour que le LLM sache qui parle
         conv.add("user", text, author=msg.username)
 
+        # En groupe, on expose les outils de coordination (create_poll, …).
+        # En DM, pas d'outils : la conversation 1-to-1 n'a pas vocation à créer
+        # des sondages de groupe.
+        tools = GROUP_TOOLS if msg.group_id else None
+
         try:
-            reply = await self.llm.chat(
+            result = await self.llm.chat(
                 messages = conv.get_history(),
                 system   = self._build_system_prompt(),
+                tools    = tools,
             )
-            conv.add("assistant", reply)
-            return Response(text=reply)
         except Exception as exc:
             logger.error("Erreur LLM : %s", exc)
             return Response(
                 text="⚠️ Je ne parviens pas à joindre le LLM pour le moment. "
                      "Vérifiez que le backend configuré est accessible."
             )
+
+        # Le LLM a-t-il décidé d'invoquer un outil ?
+        for tc in result.tool_calls:
+            if tc.name == "create_poll":
+                return self._exec_create_poll(msg, conv, tc, result.text)
+            logger.warning("Tool call inconnu ignoré : %s", tc.name)
+
+        # Pas d'outil : réponse texte classique
+        reply = result.text or ""
+        conv.add("assistant", reply)
+        return Response(text=reply)
+
+    # ── Exécution des tool calls ─────────────────────────────────────────────
+
+    def _exec_create_poll(self, msg: Message, conv, tool_call, accompanying_text: str) -> Response:
+        """Crée un sondage demandé par le LLM via tool calling."""
+        args      = tool_call.arguments or {}
+        question  = (args.get("question") or "").strip()
+        options   = [str(o).strip() for o in (args.get("options") or []) if str(o).strip()]
+        if len(options) < 2:
+            # Le LLM a appelé create_poll sans assez d'options → on renvoie un texte
+            # qui demande au groupe de préciser, plutôt que de poster un sondage cassé.
+            fallback = (
+                accompanying_text
+                or "J'ai besoin d'au moins 2 options proposées par le groupe pour lancer un sondage. "
+                   "Quelles options voulez-vous mettre au vote ?"
+            )
+            conv.add("assistant", fallback)
+            return Response(text=fallback)
+
+        poll = self.polls.create(
+            group_id   = msg.group_id,
+            creator_id = msg.user_id,
+            question   = question or "Sondage",
+            options    = options,
+        )
+        # Trace dans la mémoire de groupe pour que le LLM sache qu'il a lancé le sondage
+        memo = (accompanying_text + " " if accompanying_text else "") + \
+               f"[Sondage lancé : {poll['question']} — options : {', '.join(options)}]"
+        conv.add("assistant", memo)
+        # Texte affiché aux humains : préambule du LLM (s'il y en a un) + sondage
+        body = self.polls.format_message(poll)
+        text_out = f"{accompanying_text}\n\n{body}" if accompanying_text else body
+        return Response(
+            text        = text_out,
+            action      = "render_poll",
+            action_data = poll,
+        )
 
     # ── System prompt enrichi du contexte temporel ───────────────────────────
 

@@ -7,7 +7,7 @@ avec les autres clients de GAB.
 import logging
 import httpx
 
-from .base import LLMClient
+from .base import LLMClient, LLMResult
 
 logger = logging.getLogger("GAB.llm.anthropic")
 
@@ -36,7 +36,14 @@ class AnthropicClient(LLMClient):
             },
         )
 
-    async def chat(self, messages: list[dict], system: str | None = None) -> str:
+    async def chat(
+        self,
+        messages: list[dict],
+        system: str | None = None,
+        tools: list[dict] | None = None,
+    ) -> LLMResult:
+        # Tool calling Anthropic existe (format différent) — pas implémenté pour le palier 1.2.
+        # Les utilisateurs Anthropic gardent /sondage manuel comme fallback.
         payload: dict = {
             "model":       self.model,
             "messages":    messages,
@@ -50,7 +57,8 @@ class AnthropicClient(LLMClient):
             resp.raise_for_status()
             data = resp.json()
             blocks = data.get("content", [])
-            return "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
+            text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
+            return LLMResult(text=text)
         except httpx.HTTPStatusError as exc:
             logger.error("Erreur HTTP Anthropic %s : %s", exc.response.status_code, exc.response.text)
             raise

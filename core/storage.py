@@ -50,6 +50,36 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_conv
     ON messages(platform, conv_key, id);
+
+CREATE TABLE IF NOT EXISTS polls (
+    id          TEXT PRIMARY KEY,
+    group_id    TEXT NOT NULL,
+    creator_id  TEXT NOT NULL,
+    question    TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    closed_at   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS poll_options (
+    poll_id      TEXT NOT NULL,
+    option_index INTEGER NOT NULL,
+    label        TEXT NOT NULL,
+    PRIMARY KEY (poll_id, option_index),
+    FOREIGN KEY (poll_id) REFERENCES polls(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS poll_votes (
+    poll_id      TEXT NOT NULL,
+    user_id      TEXT NOT NULL,
+    username     TEXT NOT NULL DEFAULT '',
+    option_index INTEGER NOT NULL,
+    voted_at     TEXT NOT NULL,
+    PRIMARY KEY (poll_id, user_id),
+    FOREIGN KEY (poll_id) REFERENCES polls(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_polls_group
+    ON polls(group_id, created_at DESC);
 """
 
 

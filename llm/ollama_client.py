@@ -7,7 +7,7 @@ Aucune clé API : c'est l'utilisateur qui héberge Ollama.
 import logging
 import httpx
 
-from .base import LLMClient
+from .base import LLMClient, LLMResult
 
 logger = logging.getLogger("GAB.llm.ollama")
 
@@ -26,7 +26,14 @@ class OllamaClient(LLMClient):
         self.temperature = temperature
         self._client     = httpx.AsyncClient(timeout=120.0)
 
-    async def chat(self, messages: list[dict], system: str | None = None) -> str:
+    async def chat(
+        self,
+        messages: list[dict],
+        system: str | None = None,
+        tools: list[dict] | None = None,
+    ) -> LLMResult:
+        # Ollama : tool calling pas exposé de façon homogène entre modèles → on l'ignore.
+        # Les utilisateurs Ollama gardent /sondage manuel comme fallback.
         full = list(messages)
         if system:
             full = [{"role": "system", "content": system}, *full]
@@ -40,7 +47,7 @@ class OllamaClient(LLMClient):
         try:
             resp = await self._client.post(f"{self.base_url}/api/chat", json=payload)
             resp.raise_for_status()
-            return resp.json()["message"]["content"].strip()
+            return LLMResult(text=resp.json()["message"]["content"].strip())
         except httpx.HTTPStatusError as exc:
             logger.error("Erreur HTTP Ollama %s : %s", exc.response.status_code, exc.response.text)
             raise
