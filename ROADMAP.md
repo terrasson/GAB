@@ -19,33 +19,94 @@ Le prompt système complet est dans [`prompts/system.md`](prompts/system.md).
 
 ## Paliers
 
-### Palier 0 — MVP technique de base
+### Palier 0 — MVP technique de base ✅
 
 - [x] Bot Telegram opérationnel (polling)
 - [x] Architecture multi-plateformes (Telegram, WhatsApp, Discord)
-- [x] LLM-agnostique : Ollama, OpenAI, DeepSeek, Claude, Mistral, Groq, Together
+- [x] LLM-agnostique : Ollama, OpenAI, DeepSeek, Claude, Mistral, Groq, Together,
+      Manifest (utilisé en prod)
 - [x] Collecte automatique des IDs membres dans un groupe (`ChatMemberHandler`)
 - [x] Commande `/members` pour vérifier les IDs collectés
 - [x] Prompt système chargé depuis un fichier éditable (`prompts/system.md`)
-- [ ] Configuration BotFather effectuée (`/setjoingroups`, `/setprivacy`)
-- [ ] Premier test réel sur un groupe Telegram avec plusieurs humains
+- [x] Configuration BotFather effectuée (`/setjoingroups`, `/setprivacy`,
+      avatar avec logo officiel)
+- [x] Premier test réel sur un groupe Telegram avec plusieurs humains
+      (validé avec Audrey le 2026-05-02)
 
-### Palier 1 — Outils de coordination
+### Palier 1 — Outils de coordination ✅
 
-- [ ] **Mémoire par groupe** (refacto de `core/memory.py`) — actuellement par user
-- [ ] **`/sondage`** — `/sondage Restaurant vendredi ? Pizza | Sushis | Burger` → vote → comptage
-- [ ] **`/rappel`** — programmer une notif (`/rappel J-1 19h RDV chez Mario`)
-- [ ] **`/liste`** — liste partagée modifiable (qui amène quoi, qui paie quoi)
-- [ ] **`/agenda`** — calendrier des événements du groupe
-- [ ] **Mode écoute passive** — n'intervient que si mentionné `@GAB` ou commande explicite
-- [ ] **Flux de bienvenue intelligent en groupe** — sur ajout du bot
-  (`MyChatMemberHandler`), détecter si rejoint comme **simple membre** vs
-  **admin** :
-  - Membre simple → message d'onboarding avec lien magique de re-promotion
-    (`?startgroup=true&admin=…`) et instructions pas-à-pas
-  - Admin → message de confirmation et liste des commandes utiles
-  → l'utilisateur lambda ne doit JAMAIS avoir à manipuler manuellement les
-  permissions admin pour que GAB fonctionne pleinement.
+Tous les outils du palier 1 sont livrés et tournent en prod sur le VPS via
+`systemd gab.service`. Persistance SQLite complète (8 tables), redémarrage
+auto. Pattern uniforme pour tous les outils : commande slash rigide
+(fallback Ollama/Anthropic) + tool calling natif (Manifest/DeepSeek/OpenAI)
+avec triple verrou anti-hallucination ("n'invente pas", périmètre temporel,
+"INVOQUE — ne décris pas en texte").
+
+- [x] **Mémoire par groupe** (palier 1.1) — refacto SQLite `core/memory.py`,
+      historique partagé par groupe, préfixage des messages users par leur
+      auteur pour que le LLM sache qui parle.
+- [x] **`/sondage`** (palier 1.2) — vote multi-options avec inline keyboard
+      Telegram, UPSERT vote (1 par user, modifiable), edit-message en temps
+      réel sur clic. Tool calling natif `create_poll(question, options)`.
+- [x] **`/rappel`** (palier 1.3) — notification programmée. Scheduler
+      asyncio (poll 30s, zéro dépendance), `send_message` proactif côté
+      Telegram. Tool calling `create_reminder(fires_at, message)` avec
+      conversion langage naturel français → ISO 8601 timezone-aware.
+- [x] **`/liste`** (palier 1.4) — liste partagée modifiable avec claim/
+      unclaim par bouton. UPSERT sur `(list_id, user_id)`, item bloqué si
+      déjà claimé par autrui. Tool calling `create_list(title, items)`.
+- [x] **`/agenda`** (palier 1.5) — calendrier des événements futurs du
+      groupe. Distinct des rappels (descriptif vs actif). Boutons
+      d'annulation par événement, soft-delete via `cancelled_at`. Tool
+      calling `create_event(title, starts_at, location?)`.
+- [x] **Mode écoute passive** (palier 1.6) — en groupe, GAB ne répond que
+      si invité explicitement : commande, mention `@<bot_username>`, hashtag
+      d'éveil (`#gab`/`#ia`/`@gab`/`@ia` — regex `(?:^|\s)[#@](\w+)` qui
+      reconnaît `@gab` même sans entité Telegram), reply à un message du
+      bot. Sinon le message est juste enregistré en mémoire.
+- [x] **Flux de bienvenue intelligent en groupe** (palier 1.7) — détecte
+      sur `MyChatMemberHandler` :
+  - **Simple membre** → message d'onboarding avec lien magique de
+    re-promotion (`https://t.me/<bot_username>?startgroup=true&admin=...`).
+    Le `bot_username` est résolu dynamiquement via `ctx.bot.username` →
+    marche pour tous les self-hosters, pas seulement `@Gab_Concierge_Bot`.
+  - **Admin** → message d'accueil avec tour des commandes principales.
+  - **Promotion membre→admin** → court remerciement.
+  - L'utilisateur lambda n'a JAMAIS à manipuler manuellement les
+    permissions admin.
+
+#### Palier 1 — Bonus livrés au-delà du scope initial
+
+- [x] **Whitelist de sécurité** — `ALLOWED_USERS` + `ALLOWED_GROUPS` dans
+      `.env` pour protéger les crédits LLM contre des inconnus qui
+      découvriraient le bot. Court-circuit avant tout appel LLM.
+- [x] **Auto-whitelist dynamique** — quand un user de confiance
+      (`ALLOWED_USERS`) ajoute GAB à un nouveau groupe, ce groupe est
+      auto-inscrit dans la table SQLite `group_whitelist`. Plus besoin
+      d'éditer `.env` à la main pour chaque nouveau groupe. Périmètre
+      horizontal ouvert (l'admin ouvre N groupes), vertical clos (les
+      membres ne deviennent pas eux-mêmes des autorisateurs).
+- [x] **ForceReply auto** quand GAB pose une question dans un groupe →
+      l'utilisateur est nudgé visuellement vers la fonction Reply, sa
+      réponse libre est ainsi captée par le mode passif.
+- [x] **Injection date/heure réelles** dans le system prompt à chaque
+      appel LLM → GAB répond correctement aux questions temporelles
+      ("on est quand ?", "il est quelle heure ?"). Sans cet ancrage, les
+      LLM hallucinent l'heure depuis leur dataset d'entraînement.
+- [x] **Architecture tool calling** unifiée — `LLMResult` + `ToolCall`
+      dans `llm/base.py`, implémentation dans `OpenAICompatClient`,
+      fallback gracieux pour les providers sans tool calling (Ollama,
+      Anthropic) qui gardent les commandes slash.
+- [x] **Préambule `_INVOKE_RULE`** dans la description de chaque outil →
+      empêche le LLM de "simuler" un tool call en texte ("Liste créée :
+      ..." au lieu d'invoquer `create_list`). Bug subtil identifié et
+      corrigé en prod le 2026-05-03.
+- [x] **Leçon mémoire-LLM** : ne JAMAIS stocker de format structuré
+      (genre `[Action : ...]`) dans la mémoire conversationnelle — le LLM
+      le mime sans appeler la fonction. La mémoire conversationnelle doit
+      ressembler à de la conversation, pas à du log structuré.
+- [x] **Diagnostic `LLM result : tools=[...] | text=...`** loggué dans
+      `_llm_chat` pour tracer en `journalctl` si le LLM invoque ou simule.
 
 ### Palier 2 — Intelligence proactive
 
