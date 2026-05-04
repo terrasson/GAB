@@ -255,10 +255,120 @@ CREATE_EVENT_TOOL = {
 }
 
 
+SET_FACTS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "set_facts",
+        "description": (
+            _INVOKE_RULE +
+            "Mémorise dans la mémoire sémantique du groupe un ou plusieurs faits "
+            "que tu viens d'apprendre dans la conversation, OU qui ont changé "
+            "(une décision révisée écrase l'ancienne). Cette mémoire est "
+            "distincte de l'historique des messages : elle représente ce qui "
+            "est VRAI MAINTENANT pour ce groupe, et elle te sera réinjectée "
+            "automatiquement dans toutes tes réponses futures.\n\n"
+            "QUAND L'INVOQUER : tu invoques set_facts dans le MÊME tour que ta "
+            "réponse à l'utilisateur, dès que tu détectes une information durable "
+            "qui mérite d'être retenue (date d'un événement, lieu d'un rdv, "
+            "préférence/allergie d'un membre, code wifi, règle du groupe, etc.). "
+            "Tu peux invoquer set_facts EN PLUS de répondre en texte — les deux "
+            "ne s'excluent pas.\n\n"
+            "QUAND NE PAS L'INVOQUER : pour des informations purement "
+            "conversationnelles, anecdotiques ou éphémères (« il fait beau », "
+            "« j'ai faim », « lol »). La règle : si l'info aura encore du sens "
+            "dans 3 jours pour le groupe, c'est un fait à retenir ; sinon non.\n\n"
+            "ÉCRASEMENT (UPSERT) : si la `key` existe déjà, l'ancienne valeur "
+            "est remplacée. Utilise toujours la même clé pour le même fait — "
+            "c'est ce qui permet la mise à jour propre quand le groupe change "
+            "d'avis. Exemple : si on avait « event.dinner.date = vendredi » et "
+            "que le groupe dit « on change pour samedi », tu invoques set_facts "
+            "avec [{key: \"event.dinner.date\", value: \"samedi 9 mai 2026\"}].\n\n"
+            "CONVENTION DE CLÉS hiérarchique en snake_case ASCII :\n"
+            "- event.<nom_court>.{date, time, place, attendees, notes}\n"
+            "- member.<prénom_minuscule>.{allergies, preferences, role}\n"
+            "- group.{rules, language, name, wifi_code}\n"
+            "- trip.<destination>.{dates, accommodation, transport}\n"
+            "Reste cohérent : si tu as déjà utilisé `event.diner.date`, "
+            "n'utilise pas `event.dinner.date` ailleurs.\n\n"
+            "VALEURS : courtes et lisibles en français naturel — pas de JSON "
+            "imbriqué, pas de structure. Une valeur = une chaîne lisible "
+            "(« samedi 9 mai 2026 », « chez Mario, 12 rue X », « noix, gluten »)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "facts": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "key": {
+                                "type": "string",
+                                "description": (
+                                    "Clé hiérarchique en snake_case ASCII, "
+                                    "ex : « event.dinner.date »."
+                                ),
+                            },
+                            "value": {
+                                "type": "string",
+                                "description": (
+                                    "Valeur courte et lisible en français, "
+                                    "ex : « samedi 9 mai 2026 »."
+                                ),
+                            },
+                        },
+                        "required": ["key", "value"],
+                    },
+                    "description": (
+                        "Liste des faits à mémoriser ou mettre à jour (batch). "
+                        "1 entrée minimum."
+                    ),
+                },
+            },
+            "required": ["facts"],
+        },
+    },
+}
+
+FORGET_FACT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "forget_fact",
+        "description": (
+            _INVOKE_RULE +
+            "Supprime un fait de la mémoire sémantique du groupe. À utiliser "
+            "quand un membre annonce explicitement qu'une info n'est plus "
+            "valable et qu'aucune nouvelle valeur ne la remplace (« on annule "
+            "le dîner », « finalement Audrey n'est plus allergique »).\n\n"
+            "ATTENTION : si le membre REMPLACE une info par une nouvelle "
+            "(« on change pour samedi »), n'utilise PAS forget_fact — utilise "
+            "set_facts qui écrase automatiquement. forget_fact ne sert que "
+            "quand on retire un fait sans le remplacer."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string",
+                    "description": (
+                        "Clé exacte du fait à oublier, telle qu'elle apparaît "
+                        "dans la section « Faits actuels du groupe » du system "
+                        "prompt."
+                    ),
+                },
+            },
+            "required": ["key"],
+        },
+    },
+}
+
+
 # Outils exposés selon le contexte. En groupe : tout ; en DM : uniquement les
-# outils qui ont du sens pour un user seul (sondages, listes et événements
-# de groupe exigent un groupe).
+# outils qui ont du sens pour un user seul (sondages, listes, événements et
+# faits de groupe exigent un groupe).
 GROUP_TOOLS: list[dict] = [
     CREATE_POLL_TOOL, CREATE_REMINDER_TOOL, CREATE_LIST_TOOL, CREATE_EVENT_TOOL,
+    SET_FACTS_TOOL, FORGET_FACT_TOOL,
 ]
 DM_TOOLS:    list[dict] = [CREATE_REMINDER_TOOL]

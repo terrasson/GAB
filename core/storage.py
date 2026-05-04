@@ -140,6 +140,19 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_upcoming
     ON events(group_id, starts_at)
     WHERE cancelled_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS facts (
+    group_id    TEXT NOT NULL,
+    key         TEXT NOT NULL,
+    value       TEXT NOT NULL,
+    confidence  REAL NOT NULL DEFAULT 1.0,
+    source      TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (group_id, key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_facts_group
+    ON facts(group_id, updated_at DESC);
 """
 
 

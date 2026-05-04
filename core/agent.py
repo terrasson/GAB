@@ -17,6 +17,7 @@ from core.polls import PollManager, parse_sondage
 from core.reminders import ReminderManager, parse_rappel, format_fires_at_fr
 from core.lists import ListManager, parse_liste
 from core.events import EventManager, parse_agenda_add, format_event_when_fr
+from core.facts import FactStore
 from core.tools import GROUP_TOOLS, DM_TOOLS
 
 logger = logging.getLogger("GAB.agent")
@@ -75,6 +76,7 @@ class GabAgent:
         "/rappel":      "_cmd_rappel",
         "/liste":       "_cmd_liste",
         "/agenda":      "_cmd_agenda",
+        "/facts":       "_cmd_facts",
     }
 
     def __init__(self, cfg: Config):
@@ -85,6 +87,7 @@ class GabAgent:
         self.reminders = ReminderManager()
         self.lists     = ListManager()
         self.events    = EventManager()
+        self.facts     = FactStore()
         self.llm       = make_llm_client(cfg)
 
     # ── Point d'entrée principal ─────────────────────────────────────────────
@@ -170,7 +173,9 @@ class GabAgent:
             "`/liste <Titre> : <Item1>|<Item2>|...` — Liste partagée modifiable\n"
             "`/agenda` — Voir le planning du groupe\n"
             "`/agenda <Titre>, <YYYY-MM-DD HH:MM>, <Lieu?>` — Ajouter un événement\n"
-            "`/agenda annuler <id>` — Annuler un événement\n\n"
+            "`/agenda annuler <id>` — Annuler un événement\n"
+            "`/facts` — Voir la mémoire sémantique du groupe\n"
+            "`/facts forget <key>` — Oublier un fait précis\n\n"
             "💬 Vous pouvez aussi m'écrire librement."
         ))
 
@@ -219,7 +224,7 @@ class GabAgent:
         )
         result = await self.llm.chat(
             messages=[{"role": "user", "content": summary_prompt}],
-            system=self._build_system_prompt(),
+            system=self._build_system_prompt(msg.group_id),
         )
         return Response(text=f"📝 *Résumé de la conversation :*\n\n{result.text}")
 
@@ -376,6 +381,29 @@ class GabAgent:
             return None
         return self.events.cancel(event_id)
 
+    async def _cmd_facts(self, msg: Message, arg: str) -> Response:
+        """Inspecte (et nettoie) la mémoire sémantique du groupe.
+
+        - `/facts` → liste les faits actuels du groupe.
+        - `/facts forget <key>` → supprime un fait à la main (utile pour
+          rattraper une boulette du LLM ou nettoyer après un test).
+        """
+        if not msg.group_id:
+            return Response(text="ℹ️ `/facts` ne fonctionne qu'en groupe.")
+        arg = arg.strip()
+        lower = arg.lower()
+        if lower.startswith("forget ") or lower.startswith("oublie "):
+            key = arg.split(maxsplit=1)[1].strip()
+            if not key:
+                return Response(text="Usage : `/facts forget <key>`")
+            ok = self.facts.forget(msg.group_id, key)
+            return Response(
+                text=(f"🧠 Fait `{key}` oublié." if ok
+                      else f"Aucun fait `{key}` à oublier.")
+            )
+        facts = self.facts.list_for_group(msg.group_id)
+        return Response(text=FactStore.format_for_debug(facts))
+
     async def _cmd_members(self, msg: Message, _: str) -> Response:
         if not msg.group_id:
             return Response(text="ℹ️ `/members` doit être utilisé dans un groupe.")
@@ -404,7 +432,7 @@ class GabAgent:
         try:
             result = await self.llm.chat(
                 messages = conv.get_history(),
-                system   = self._build_system_prompt(),
+                system   = self._build_system_prompt(msg.group_id),
                 tools    = tools,
             )
         except Exception as exc:
@@ -420,7 +448,17 @@ class GabAgent:
         text_preview = (result.text or "")[:120].replace("\n", " ")
         logger.info("LLM result : tools=%s | text=%r", tool_names, text_preview)
 
-        # Le LLM a-t-il décidé d'invoquer un outil ?
+        # Side-effects silencieux d'abord (mémoire sémantique). Ces outils
+        # peuvent coexister avec une réponse texte OU avec un autre tool call
+        # "actif" (create_poll, …), donc on les traite séparément sans return.
+        for tc in result.tool_calls:
+            if tc.name == "set_facts":
+                self._exec_set_facts(msg, tc)
+            elif tc.name == "forget_fact":
+                self._exec_forget_fact(msg, tc)
+
+        # Puis les tool calls "actifs" (un seul par tour, c'est le pattern
+        # historique : sondage, rappel, liste, événement).
         for tc in result.tool_calls:
             if tc.name == "create_poll":
                 return self._exec_create_poll(msg, conv, tc, result.text)
@@ -430,9 +468,13 @@ class GabAgent:
                 return self._exec_create_list(msg, conv, tc, result.text)
             if tc.name == "create_event":
                 return self._exec_create_event(msg, conv, tc, result.text)
+            if tc.name in ("set_facts", "forget_fact"):
+                continue  # déjà traité au-dessus
             logger.warning("Tool call inconnu ignoré : %s", tc.name)
 
-        # Pas d'outil : réponse texte classique
+        # Pas d'outil "actif" : réponse texte classique (peut être vide si le
+        # LLM n'a fait que set_facts en silence — dans ce cas on ne renvoie
+        # rien à la plateforme, set_facts est invisible côté UX).
         reply = result.text or ""
         conv.add("assistant", reply)
         return Response(text=reply)
@@ -616,23 +658,65 @@ class GabAgent:
         conv.add("assistant", accompanying_text or "Événement ajouté.")
         return Response(text=confirm)
 
+    def _exec_set_facts(self, msg: Message, tool_call) -> None:
+        """Mémorise des faits en mémoire sémantique. Side-effect silencieux :
+        pas de message renvoyé à l'utilisateur, le LLM peut accompagner
+        l'écriture d'une réponse texte naturelle si pertinent.
+
+        Hors groupe (DM), set_facts est ignoré : la mémoire sémantique est
+        un objet de groupe, pas de personne (le tool n'est même pas exposé
+        en DM, mais on garde la garde au cas où).
+        """
+        if not msg.group_id:
+            return
+        args = tool_call.arguments or {}
+        facts = args.get("facts") or []
+        if not isinstance(facts, list):
+            logger.warning("set_facts : `facts` n'est pas une liste : %r", facts)
+            return
+        source = f"user:{msg.user_id}"
+        saved = self.facts.set_many(msg.group_id, facts, source=source)
+        logger.info("set_facts : %d fait(s) écrit(s) pour %s", len(saved), msg.group_id)
+
+    def _exec_forget_fact(self, msg: Message, tool_call) -> None:
+        """Supprime un fait de la mémoire sémantique. Side-effect silencieux."""
+        if not msg.group_id:
+            return
+        args = tool_call.arguments or {}
+        key = (args.get("key") or "").strip()
+        if not key:
+            return
+        ok = self.facts.forget(msg.group_id, key)
+        logger.info("forget_fact : %s/%s → %s", msg.group_id, key, "ok" if ok else "missing")
+
     # ── System prompt enrichi du contexte temporel ───────────────────────────
 
-    def _build_system_prompt(self) -> str:
-        """Combine le prompt système éditable avec la date/heure courantes.
+    def _build_system_prompt(self, group_id: str | None = None) -> str:
+        """Combine le prompt système éditable avec la date/heure courantes
+        et la mémoire sémantique du groupe (si on est en groupe).
 
-        Sans cet ancrage, les LLM hallucinent l'heure (souvent celle de leur
-        dataset d'entraînement). En injectant la date/heure réelles à chaque
-        appel, GAB répond correctement aux questions temporelles ("on est
-        quand ?", "il est quelle heure ?", "quel jour ?").
+        - Date/heure : sans cet ancrage, les LLM hallucinent l'heure (souvent
+          celle de leur dataset). En injectant la date/heure réelles à chaque
+          appel, GAB répond correctement aux questions temporelles.
+        - Faits du groupe : la mémoire sémantique « vraie maintenant » est
+          réinjectée à chaque tour pour que le LLM y ait accès comme contexte
+          structuré (distinct de l'historique conversationnel).
         """
-        return (
-            f"{self.cfg.SYSTEM_PROMPT}\n\n"
-            f"---\n"
-            f"Contexte temporel actuel : {_now_fr()}.\n"
-            f"Utilise cette information quand tu réponds à des questions sur "
-            f"la date ou l'heure."
-        )
+        parts = [
+            self.cfg.SYSTEM_PROMPT,
+            "",
+            "---",
+            f"Contexte temporel actuel : {_now_fr()}.",
+            "Utilise cette information quand tu réponds à des questions sur "
+            "la date ou l'heure.",
+        ]
+        if group_id:
+            facts_block = FactStore.format_for_prompt(
+                self.facts.list_for_group(group_id)
+            )
+            if facts_block:
+                parts.extend(["", "---", facts_block])
+        return "\n".join(parts)
 
     async def close(self) -> None:
         await self.llm.aclose()
