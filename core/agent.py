@@ -16,6 +16,7 @@ from core.group_manager import GroupManager
 from core.polls import PollManager, parse_sondage
 from core.reminders import ReminderManager, parse_rappel, format_fires_at_fr
 from core.lists import ListManager, parse_liste
+from core.events import EventManager, parse_agenda_add, format_event_when_fr
 from core.tools import GROUP_TOOLS, DM_TOOLS
 
 logger = logging.getLogger("GAB.agent")
@@ -73,6 +74,7 @@ class GabAgent:
         "/sondage":     "_cmd_sondage",
         "/rappel":      "_cmd_rappel",
         "/liste":       "_cmd_liste",
+        "/agenda":      "_cmd_agenda",
     }
 
     def __init__(self, cfg: Config):
@@ -82,6 +84,7 @@ class GabAgent:
         self.polls     = PollManager()
         self.reminders = ReminderManager()
         self.lists     = ListManager()
+        self.events    = EventManager()
         self.llm       = make_llm_client(cfg)
 
     # ── Point d'entrée principal ─────────────────────────────────────────────
@@ -164,7 +167,10 @@ class GabAgent:
             "`/members`              — Lister les IDs des membres connus du groupe\n"
             "`/sondage <Q?> <O1>|<O2>|<O3>` — Lancer un vote multi-options\n"
             "`/rappel <YYYY-MM-DD> <HH:MM> <message>` — Programmer un rappel\n"
-            "`/liste <Titre> : <Item1>|<Item2>|...` — Liste partagée modifiable\n\n"
+            "`/liste <Titre> : <Item1>|<Item2>|...` — Liste partagée modifiable\n"
+            "`/agenda` — Voir le planning du groupe\n"
+            "`/agenda <Titre>, <YYYY-MM-DD HH:MM>, <Lieu?>` — Ajouter un événement\n"
+            "`/agenda annuler <id>` — Annuler un événement\n\n"
             "💬 Vous pouvez aussi m'écrire librement."
         ))
 
@@ -315,6 +321,61 @@ class GabAgent:
         """Point d'entrée appelé par les plateformes sur clic de bouton item."""
         return self.lists.claim(list_id, item_index, user_id, user_name)
 
+    async def _cmd_agenda(self, msg: Message, arg: str) -> Response:
+        if not msg.group_id:
+            return Response(text="ℹ️ `/agenda` ne fonctionne qu'en groupe.")
+        arg = arg.strip()
+
+        # Mode 1 : sans argument → liste les événements à venir
+        if not arg:
+            events = self.events.list_upcoming(msg.group_id)
+            return Response(
+                text        = self.events.format_agenda(events),
+                action      = "render_agenda",
+                action_data = {"events": events, "group_id": msg.group_id},
+            )
+
+        # Mode 2 : `/agenda annuler <id>` → annulation
+        lower = arg.lower()
+        if lower.startswith("annuler ") or lower.startswith("cancel "):
+            event_id = arg.split(maxsplit=1)[1].strip()
+            return await self._cmd_agenda_cancel(msg, event_id)
+
+        # Mode 3 : `/agenda <titre>, <date>, <lieu?>` → ajout
+        when, title, location, error = parse_agenda_add(arg)
+        if error:
+            return Response(text=error)
+        event = self.events.create(
+            group_id   = msg.group_id,
+            creator_id = msg.user_id,
+            title      = title,
+            starts_at  = when,
+            location   = location,
+        )
+        when_label = format_event_when_fr(event["starts_at"])
+        return Response(
+            text=f"📅 Ajouté à l'agenda : *{title}* le {when_label}."
+                 + (f"\n📍 {location}" if location else "")
+        )
+
+    async def _cmd_agenda_cancel(self, msg: Message, event_id: str) -> Response:
+        event = self.events.get(event_id)
+        if not event:
+            return Response(text=f"Aucun événement trouvé avec l'id `{event_id}`.")
+        if event["group_id"] != msg.group_id:
+            return Response(text="Cet événement n'appartient pas à ce groupe.")
+        if event["cancelled_at"]:
+            return Response(text="Cet événement est déjà annulé.")
+        self.events.cancel(event_id)
+        return Response(text=f"🗑️ Événement *{event['title']}* annulé.")
+
+    async def cancel_event(self, event_id: str, group_id: str) -> dict | None:
+        """Point d'entrée appelé par les plateformes sur clic de bouton « Annuler »."""
+        event = self.events.get(event_id)
+        if not event or event["group_id"] != group_id or event["cancelled_at"]:
+            return None
+        return self.events.cancel(event_id)
+
     async def _cmd_members(self, msg: Message, _: str) -> Response:
         if not msg.group_id:
             return Response(text="ℹ️ `/members` doit être utilisé dans un groupe.")
@@ -367,6 +428,8 @@ class GabAgent:
                 return self._exec_create_reminder(msg, conv, tc, result.text)
             if tc.name == "create_list":
                 return self._exec_create_list(msg, conv, tc, result.text)
+            if tc.name == "create_event":
+                return self._exec_create_event(msg, conv, tc, result.text)
             logger.warning("Tool call inconnu ignoré : %s", tc.name)
 
         # Pas d'outil : réponse texte classique
@@ -498,6 +561,60 @@ class GabAgent:
             action      = "render_list",
             action_data = lst,
         )
+
+    def _exec_create_event(self, msg: Message, conv, tool_call, accompanying_text: str) -> Response:
+        """Ajoute un événement à l'agenda demandé par le LLM via tool calling."""
+        args      = tool_call.arguments or {}
+        title     = (args.get("title") or "").strip()
+        starts_at = (args.get("starts_at") or "").strip()
+        location  = (args.get("location") or "").strip()
+
+        if not title:
+            fallback = (
+                accompanying_text
+                or "Comment veux-tu appeler cet événement ?"
+            )
+            conv.add("assistant", fallback)
+            return Response(text=fallback)
+
+        try:
+            when = datetime.fromisoformat(starts_at)
+        except (ValueError, TypeError):
+            fallback = (
+                accompanying_text
+                or "Je n'ai pas compris la date. À quelle date et heure exactement ?"
+            )
+            conv.add("assistant", fallback)
+            return Response(text=fallback)
+
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=_TZ_PARIS)
+
+        if when <= datetime.now(_TZ_PARIS):
+            fallback = (
+                accompanying_text
+                or "Cette date est déjà passée. Pour quand veux-tu programmer l'événement ?"
+            )
+            conv.add("assistant", fallback)
+            return Response(text=fallback)
+
+        event = self.events.create(
+            group_id   = msg.group_id,
+            creator_id = msg.user_id,
+            title      = title,
+            starts_at  = when,
+            location   = location,
+        )
+        when_label = format_event_when_fr(event["starts_at"])
+        confirm_lines = [
+            (accompanying_text + "\n" if accompanying_text else "")
+            + f"📅 Ajouté à l'agenda : *{title}* le {when_label}."
+        ]
+        if location:
+            confirm_lines.append(f"📍 {location}")
+        confirm = "\n".join(confirm_lines)
+        conv.add("assistant", accompanying_text or "Événement ajouté.")
+        return Response(text=confirm)
 
     # ── System prompt enrichi du contexte temporel ───────────────────────────
 

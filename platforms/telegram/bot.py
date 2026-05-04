@@ -131,6 +131,7 @@ class TelegramPlatform(BasePlatform):
         app.add_handler(CommandHandler("sondage",      self._on_command))
         app.add_handler(CommandHandler("rappel",       self._on_command))
         app.add_handler(CommandHandler("liste",        self._on_command))
+        app.add_handler(CommandHandler("agenda",       self._on_command))
         app.add_handler(CallbackQueryHandler(self._on_button))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message))
         app.add_handler(ChatMemberHandler(self._on_chat_member, ChatMemberHandler.CHAT_MEMBER))
@@ -154,6 +155,11 @@ class TelegramPlatform(BasePlatform):
         # Claim d'un item de liste : `claim:<list_id>:<item_index>`
         if query.data and query.data.startswith("claim:"):
             await self._handle_claim_click(query)
+            return
+
+        # Annulation d'événement d'agenda : `cancel_event:<event_id>`
+        if query.data and query.data.startswith("cancel_event:"):
+            await self._handle_cancel_event_click(query)
             return
 
         # Sinon, callback générique : on réinjecte comme texte de commande
@@ -347,6 +353,16 @@ class TelegramPlatform(BasePlatform):
             )
             return
 
+        # Agenda affiché : boutons d'annulation par événement (en pile)
+        if response.action == "render_agenda" and response.action_data:
+            events = response.action_data.get("events") or []
+            await tg_msg.reply_text(
+                response.text,
+                parse_mode   = ParseMode.MARKDOWN,
+                reply_markup = self._build_agenda_keyboard(events) if events else None,
+            )
+            return
+
         # Réponse silencieuse : on n'envoie rien (utile pour le rejet whitelist
         # en groupe ou tout autre cas où Response.text est vide).
         if response.text:
@@ -510,3 +526,42 @@ class TelegramPlatform(BasePlatform):
         except Exception as exc:
             if "not modified" not in str(exc).lower():
                 logger.warning("Edit de la liste impossible : %s", exc)
+
+    # ── Agenda : clavier d'annulation + traitement d'un clic ──────────────────
+
+    @staticmethod
+    def _build_agenda_keyboard(events: list[dict]) -> InlineKeyboardMarkup:
+        """Un bouton "🗑️ Annuler" par événement, empilés."""
+        rows = []
+        for e in events:
+            label = f"🗑️ {e['title']}"
+            rows.append([InlineKeyboardButton(
+                label[:64],  # garde-fou pour Telegram (longueur max bouton)
+                callback_data=f"cancel_event:{e['id']}",
+            )])
+        return InlineKeyboardMarkup(rows)
+
+    async def _handle_cancel_event_click(self, query) -> None:
+        try:
+            _, event_id = query.data.split(":", 1)
+        except (ValueError, AttributeError):
+            return
+        chat_id = str(query.message.chat.id) if query.message.chat else None
+        if not chat_id:
+            return
+        cancelled = await self.agent.cancel_event(event_id, chat_id)
+        if not cancelled:
+            await query.answer("Déjà annulé ou introuvable.", show_alert=False)
+            return
+        await query.answer(f"🗑️ Annulé : {cancelled['title']}", show_alert=False)
+        # Re-rendu de l'agenda mis à jour
+        events = self.agent.events.list_upcoming(chat_id)
+        try:
+            await query.message.edit_text(
+                self.agent.events.format_agenda(events),
+                parse_mode   = ParseMode.MARKDOWN,
+                reply_markup = self._build_agenda_keyboard(events) if events else None,
+            )
+        except Exception as exc:
+            if "not modified" not in str(exc).lower():
+                logger.warning("Edit de l'agenda impossible : %s", exc)

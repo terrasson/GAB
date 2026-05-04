@@ -191,7 +191,74 @@ CREATE_LIST_TOOL = {
 }
 
 
+CREATE_EVENT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "create_event",
+        "description": (
+            _INVOKE_RULE +
+            "Ajoute un événement à l'agenda du groupe. À utiliser quand un "
+            "membre annonce une sortie, un anniversaire, un rendez-vous ou "
+            "toute date future que le groupe veut garder en mémoire (« on a "
+            "un BBQ chez Marc samedi », « anniv d'Audrey vendredi 23 »).\n\n"
+            "RÈGLE ABSOLUE : tu n'inventes JAMAIS la date, l'heure, le titre "
+            "ni le lieu. Toutes ces infos viennent UNIQUEMENT de ce que les "
+            "membres ont écrit dans la conversation. Si une info essentielle "
+            "manque (date floue comme « bientôt », titre absent, etc.), tu "
+            "réponds en texte (pas d'appel à cette fonction) en demandant la "
+            "précision : « À quelle date exactement ? », « Comment veux-tu "
+            "appeler cet événement ? ».\n\n"
+            "PÉRIMÈTRE TEMPOREL : titre, date et lieu doivent venir de "
+            "l'échange immédiat où l'événement est demandé. Tu n'extrais "
+            "JAMAIS d'événement depuis des messages anciens du groupe sans "
+            "que le membre le redonne maintenant.\n\n"
+            "FORMAT DE LA DATE : tu convertis le langage naturel français "
+            "(« samedi 19h », « le 15 mai à 19h », « dans 3 jours à midi ») "
+            "en ISO 8601 timezone-aware. Fuseau par défaut : Europe/Paris "
+            "(`+02:00` en heure d'été, `+01:00` en heure d'hiver). Tu utilises "
+            "la date/heure courantes injectées dans le system prompt comme "
+            "référence pour résoudre les expressions relatives.\n\n"
+            "La date doit être dans le futur. Si l'utilisateur donne une date "
+            "passée, tu lui fais remarquer en texte sans appeler la fonction.\n\n"
+            "Le lieu (`location`) est OPTIONNEL — tu ne le passes que si le "
+            "membre l'a explicitement mentionné. N'invente pas de lieu."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": (
+                        "Titre court et descriptif de l'événement, en français. "
+                        "Ex : « BBQ chez Marc », « Anniv Audrey », « Tournoi Mölkky »."
+                    ),
+                },
+                "starts_at": {
+                    "type": "string",
+                    "description": (
+                        "Date/heure de début au format ISO 8601 timezone-aware. "
+                        "Ex : « 2026-05-15T19:00:00+02:00 »."
+                    ),
+                },
+                "location": {
+                    "type": "string",
+                    "description": (
+                        "Lieu de l'événement (optionnel). Ex : « chez Marc 12 rue X », "
+                        "« Buttes-Chaumont », « Restau Mario ». Vide ou absent si "
+                        "aucun lieu n'a été mentionné."
+                    ),
+                },
+            },
+            "required": ["title", "starts_at"],
+        },
+    },
+}
+
+
 # Outils exposés selon le contexte. En groupe : tout ; en DM : uniquement les
-# outils qui ont du sens pour un user seul (sondages et listes exigent un groupe).
-GROUP_TOOLS: list[dict] = [CREATE_POLL_TOOL, CREATE_REMINDER_TOOL, CREATE_LIST_TOOL]
+# outils qui ont du sens pour un user seul (sondages, listes et événements
+# de groupe exigent un groupe).
+GROUP_TOOLS: list[dict] = [
+    CREATE_POLL_TOOL, CREATE_REMINDER_TOOL, CREATE_LIST_TOOL, CREATE_EVENT_TOOL,
+]
 DM_TOOLS:    list[dict] = [CREATE_REMINDER_TOOL]

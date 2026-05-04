@@ -125,6 +125,21 @@ CREATE TABLE IF NOT EXISTS group_whitelist (
     added_by    TEXT NOT NULL,
     added_at    TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS events (
+    id            TEXT PRIMARY KEY,
+    group_id      TEXT NOT NULL,
+    creator_id    TEXT NOT NULL,
+    title         TEXT NOT NULL,
+    starts_at     TEXT NOT NULL,
+    location      TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL,
+    cancelled_at  TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_upcoming
+    ON events(group_id, starts_at)
+    WHERE cancelled_at IS NULL;
 """
 
 
