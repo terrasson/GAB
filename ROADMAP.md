@@ -200,18 +200,63 @@ Convention de clés hiérarchique : `event.<nom>.{date,place,time,attendees}`,
 - (optionnel) Commande `/facts` pour debug : afficher la sémantique
   actuelle d'un groupe
 
-#### 2.2 — Détection d'intention en conversation
+#### 2.2 — Détection d'intention en conversation ✅
 
-- [ ] « on pourrait aller au resto » → GAB propose un `/sondage` Restaurant
-- [ ] « il faut qu'on rappelle Audrey jeudi » → propose un `/rappel`
-- [ ] « on est combien ? » → consulte `/members` automatiquement
+Livré en prod le 2026-05-05 (commit `598625f`). Architecture **hybride
+parcimonieuse** (option 3) :
 
-#### 2.3 — Personnalité "chef de groupe"
+- Pré-filtre regex FR (6 catégories : poll/reminder/event/list/members/
+  suggestion) qui rejette ~95 % des messages anodins en microsecondes,
+  sans appel LLM. 17/17 sur le sample de test.
+- Scan LLM dédié sur les ~5 % qui passent, avec un system prompt
+  minimaliste « parcimonie absolue, ≥ 2 membres distincts, action
+  concrète utile, sinon silence ». Tool `propose_intent` exposé
+  séparément via `SCAN_TOOLS`, hors `GROUP_TOOLS`.
+- Cooldown 1h par groupe (`GroupSettings.cooldown_ok`, env
+  `INTENT_COOLDOWN_MINUTES`).
+- Opt-out par groupe via commande `/intent on|off`.
+- Forme : message court terminé par « ? » + ForceReply pour nudger une
+  réponse — l'utilisateur répond « oui »/« non » et réveille GAB
+  normalement.
 
-- [ ] GAB intervient au **bon moment** : pas trop bavard, pas absent quand
-      on a besoin de lui
-- [ ] Heuristique : intervient si silence prolongé sur une décision en
-      attente, ou si une intention claire est détectée
+Cas d'usage couverts :
+- ✅ « on pourrait aller au resto samedi ? » repris par 2 membres → propose
+  un sondage
+- ✅ « faut pas oublier de réserver le train » repris → propose un rappel
+- ✅ « on est combien pour samedi ? » → consulte `/members` (action_type=members)
+
+#### 2.3 — Personnalité "chef de groupe" ✅ (heuristique 1 livrée)
+
+Livré en prod le 2026-05-05 (commit `c7630ff`). **Validé en condition
+réelle** le même jour : les sondages du week-end précédent non tranchés
+ont été relancés spontanément par GAB.
+
+Architecture : `NudgeScheduler` asyncio périodique (poll défaut 30 min)
+qui scanne l'état des objets persistants du groupe (commencé par les
+sondages). Distinct du palier 2.2 :
+- **2.2** réagit à un message en cours (intent conversationnel).
+- **2.3** réagit à l'état des objets du groupe (nudge temporel).
+
+Garde-fous (4 niveaux) :
+1. Whitelist groupe (filtre implicite par création du poll).
+2. `intent_enabled` ON (le `/intent off` désactive aussi les nudges).
+3. Cooldown global partagé avec 2.2 (`GroupSettings.cooldown_ok`).
+4. Anti-doublon : table `nudges_sent (target_type, target_id, ...)`.
+   Un même poll n'est nudgé qu'UNE fois. Table générique extensible
+   aux heuristiques 2 et 3 sans migration.
+
+Heuristique 1 livrée : sondage non clôturé > `NUDGE_POLL_AGE_HOURS`
+(défaut 24h) avec ratio max/total < `NUDGE_POLL_TRANCHE_RATIO`
+(défaut 0.6). Détection en SQL pur, LLM appelé uniquement pour
+formuler le texte de relance (1 appel par poll candidat, ~0-3/jour
+pour un groupe actif). Fallback déterministe si LLM down.
+
+Heuristiques restantes (à venir) :
+- [ ] **2.3.b** — Événement imminent dans 24-48h, le groupe n'en a pas
+      reparlé depuis sa création → ping de confirmation (« Rappel :
+      [event] [quand]. Tout le monde est OK ? »).
+- [ ] **2.3.c** — Liste partagée > 48h avec > 50 % d'items non claimés →
+      relance (« Il reste [items] à se répartir. »).
 
 #### 2.4 — Récap multi-jours / multi-membres
 
