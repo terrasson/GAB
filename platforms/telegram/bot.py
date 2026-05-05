@@ -132,6 +132,8 @@ class TelegramPlatform(BasePlatform):
         app.add_handler(CommandHandler("rappel",       self._on_command))
         app.add_handler(CommandHandler("liste",        self._on_command))
         app.add_handler(CommandHandler("agenda",       self._on_command))
+        app.add_handler(CommandHandler("facts",        self._on_command))
+        app.add_handler(CommandHandler("intent",       self._on_command))
         app.add_handler(CallbackQueryHandler(self._on_button))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message))
         app.add_handler(ChatMemberHandler(self._on_chat_member, ChatMemberHandler.CHAT_MEMBER))
@@ -323,11 +325,23 @@ class TelegramPlatform(BasePlatform):
             )
 
         # Mode écoute passive : en groupe, on ne parle que si sollicité.
-        # Sinon on enregistre le message dans la mémoire du groupe pour que
-        # le LLM ait le contexte la prochaine fois qu'il est appelé.
+        # Sinon on enregistre le message dans la mémoire du groupe ET on
+        # déclenche le scan d'intention (palier 2.2). Le scan a son propre
+        # garde-fou (pré-filtre regex + cooldown 1h + opt-out par groupe),
+        # donc 95 % des messages anodins sortent en quelques µs sans appel LLM.
         if is_group and not self._should_respond_in_group(tg_msg, ctx):
             conv = self.agent.memory.get(msg.platform, msg.user_id, msg.group_id)
             conv.add("user", text, author=user.username or user.first_name or "")
+            suggestion = await self.agent.scan_intent(msg)
+            if suggestion:
+                try:
+                    await tg_msg.reply_text(
+                        suggestion,
+                        parse_mode   = ParseMode.MARKDOWN,
+                        reply_markup = ForceReply(selective=True),
+                    )
+                except Exception as exc:
+                    logger.warning("Suggestion spontanée non envoyée : %s", exc)
             return
 
         # Indicateur "en train d'écrire…"

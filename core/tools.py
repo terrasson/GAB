@@ -364,11 +364,85 @@ FORGET_FACT_TOOL = {
 }
 
 
+PROPOSE_INTENT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "propose_intent",
+        "description": (
+            _INVOKE_RULE +
+            "Outil RÉSERVÉ au mode SCAN d'intention (palier 2.2). Tu es appelé "
+            "en mode silencieux pour examiner les derniers messages d'un groupe "
+            "et juger si une intention claire et collective émerge — auquel cas "
+            "tu invoques cet outil avec une suggestion courte que GAB enverra "
+            "spontanément au groupe.\n\n"
+            "RÈGLE D'OR — PARCIMONIE : tu n'invoques cet outil QUE si TOUS les "
+            "critères suivants sont vrais :\n"
+            "1. L'intention est CLAIRE (pas une vague allusion).\n"
+            "2. Au moins 2 membres distincts en parlent dans le fil récent "
+            "   (signe d'un sujet collectif, pas d'une remarque isolée).\n"
+            "3. Une action concrète de GAB serait UTILE (lancer un sondage, "
+            "   programmer un rappel, ouvrir une liste, ajouter un événement, "
+            "   consulter les membres).\n"
+            "4. Le groupe ne semble pas déjà en train de gérer le sujet "
+            "   sans toi.\n"
+            "Si le moindre critère manque, tu N'INVOQUES PAS l'outil et tu "
+            "réponds en texte vide (le système comprend que tu te tais).\n\n"
+            "EXEMPLES (extraits de conversation → décision) :\n"
+            "  • « Marc: on pourrait aller au resto samedi ? / Audrey: oui ! / "
+            "    Marc: pizza ou sushi ? » → INVOQUE avec action_type=poll, "
+            "    suggestion='Je peux lancer un sondage pizza vs sushi pour "
+            "    samedi soir ?'\n"
+            "  • « Marc: il fait beau » → IGNORE (pas d'intention).\n"
+            "  • « Marc: on devrait penser à réserver le train pour Lyon » → "
+            "    si suivi par d'autres membres qui rebondissent : INVOQUE avec "
+            "    action_type=reminder, suggestion='Je peux vous mettre un "
+            "    rappel pour réserver le train ?'\n\n"
+            "FORMAT DE LA SUGGESTION : une seule phrase courte, en français, "
+            "qui se termine par un point d'interrogation pour inviter le "
+            "groupe à dire oui ou non. JAMAIS d'action irréversible — tu "
+            "PROPOSES, tu n'agis pas. Préfixe optionnellement par 💡 (déjà "
+            "ajouté côté code).\n\n"
+            "PAS DE BAVARDAGE : si tu hésites, tu te tais. Le coût d'une "
+            "intervention spontanée raté est élevé (le groupe se sent harcelé) ; "
+            "le coût d'une intervention loupée est faible (les membres "
+            "demanderont à GAB d'eux-mêmes)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action_type": {
+                    "type": "string",
+                    "enum": ["poll", "reminder", "list", "event", "members", "other"],
+                    "description": (
+                        "Type d'action que GAB suggérerait : poll (sondage), "
+                        "reminder (rappel), list (liste partagée), event "
+                        "(événement à l'agenda), members (consulter qui est là), "
+                        "other (autre, à expliciter dans suggestion)."
+                    ),
+                },
+                "suggestion": {
+                    "type": "string",
+                    "description": (
+                        "Phrase courte (≤ 25 mots) terminée par « ? », à "
+                        "envoyer telle quelle dans le groupe. Ex : « Je peux "
+                        "lancer un sondage pizza vs sushi pour samedi soir ? »."
+                    ),
+                },
+            },
+            "required": ["action_type", "suggestion"],
+        },
+    },
+}
+
+
 # Outils exposés selon le contexte. En groupe : tout ; en DM : uniquement les
 # outils qui ont du sens pour un user seul (sondages, listes, événements et
-# faits de groupe exigent un groupe).
+# faits de groupe exigent un groupe). PROPOSE_INTENT_TOOL n'est PAS dans
+# GROUP_TOOLS — il est exposé séparément dans le mode scan d'intention,
+# avec son propre system prompt.
 GROUP_TOOLS: list[dict] = [
     CREATE_POLL_TOOL, CREATE_REMINDER_TOOL, CREATE_LIST_TOOL, CREATE_EVENT_TOOL,
     SET_FACTS_TOOL, FORGET_FACT_TOOL,
 ]
 DM_TOOLS:    list[dict] = [CREATE_REMINDER_TOOL]
+SCAN_TOOLS:  list[dict] = [PROPOSE_INTENT_TOOL]

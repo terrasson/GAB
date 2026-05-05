@@ -18,7 +18,10 @@ from core.reminders import ReminderManager, parse_rappel, format_fires_at_fr
 from core.lists import ListManager, parse_liste
 from core.events import EventManager, parse_agenda_add, format_event_when_fr
 from core.facts import FactStore
-from core.tools import GROUP_TOOLS, DM_TOOLS
+from core.intents import (
+    GroupSettings, looks_like_intent, classify_intent_keywords,
+)
+from core.tools import GROUP_TOOLS, DM_TOOLS, SCAN_TOOLS
 
 logger = logging.getLogger("GAB.agent")
 
@@ -77,6 +80,7 @@ class GabAgent:
         "/liste":       "_cmd_liste",
         "/agenda":      "_cmd_agenda",
         "/facts":       "_cmd_facts",
+        "/intent":      "_cmd_intent",
     }
 
     def __init__(self, cfg: Config):
@@ -88,6 +92,7 @@ class GabAgent:
         self.lists     = ListManager()
         self.events    = EventManager()
         self.facts     = FactStore()
+        self.settings  = GroupSettings()
         self.llm       = make_llm_client(cfg)
 
     # ── Point d'entrée principal ─────────────────────────────────────────────
@@ -175,7 +180,8 @@ class GabAgent:
             "`/agenda <Titre>, <YYYY-MM-DD HH:MM>, <Lieu?>` — Ajouter un événement\n"
             "`/agenda annuler <id>` — Annuler un événement\n"
             "`/facts` — Voir la mémoire sémantique du groupe\n"
-            "`/facts forget <key>` — Oublier un fait précis\n\n"
+            "`/facts forget <key>` — Oublier un fait précis\n"
+            "`/intent` — Détection d'intention spontanée (on/off)\n\n"
             "💬 Vous pouvez aussi m'écrire librement."
         ))
 
@@ -688,6 +694,125 @@ class GabAgent:
             return
         ok = self.facts.forget(msg.group_id, key)
         logger.info("forget_fact : %s/%s → %s", msg.group_id, key, "ok" if ok else "missing")
+
+    # ── Scan d'intention conversationnelle (palier 2.2) ──────────────────────
+
+    _SCAN_SYSTEM_PROMPT = (
+        "Tu es GAB en mode SCAN D'INTENTION. Tu observes en silence un fil de "
+        "conversation de groupe et tu juges si une intention claire et "
+        "collective émerge — auquel cas tu invoques la fonction `propose_intent` "
+        "avec une suggestion courte que GAB enverra spontanément au groupe.\n\n"
+        "RÈGLE D'OR : parcimonie absolue. N'invoque la fonction QUE si :\n"
+        "1. L'intention est CLAIRE (pas une vague allusion).\n"
+        "2. Au moins 2 membres distincts en parlent dans le fil récent.\n"
+        "3. Une action concrète de GAB serait UTILE.\n"
+        "4. Le groupe ne gère pas déjà le sujet sans toi.\n"
+        "Si le moindre critère manque, tu réponds en texte VIDE — pas de "
+        "fonction, pas de phrase. Le silence est ton mode par défaut.\n\n"
+        "EXEMPLES :\n"
+        "  • « Marc: on pourrait aller au resto samedi ? / Audrey: oui ! / "
+        "    Marc: pizza ou sushi ? » → invoque propose_intent(action_type=poll, "
+        "    suggestion='Je peux lancer un sondage pizza vs sushi pour samedi soir ?').\n"
+        "  • « Marc: il fait beau » → IGNORE.\n"
+        "  • « Marc: faut qu'on pense au train pour Lyon » seul, sans rebond → "
+        "    IGNORE (1 seule personne).\n\n"
+        "Tu ne réponds JAMAIS au contenu du fil — tu ne participes pas à la "
+        "conversation. Tu ne fais qu'invoquer la fonction OU te taire."
+    )
+
+    async def scan_intent(self, msg: Message) -> str | None:
+        """Point d'entrée appelé par la plateforme pour CHAQUE message en
+        groupe (même non réveillé). Retourne le texte à envoyer au groupe
+        si une intention forte est détectée, sinon None.
+
+        Pipeline (court-circuit dès qu'un test échoue, pour la perf) :
+        1. Garde-fous : groupe + whitelist + intent_enabled + cooldown.
+        2. Pré-filtre regex (cheap, in-memory).
+        3. Scan LLM dédié (cher mais ≤ 5 % des messages).
+        4. Vérification du tool call propose_intent.
+
+        Renvoie aussi None silencieusement si le LLM est indisponible —
+        le scan ne doit jamais empêcher le bot de fonctionner.
+        """
+        if not msg.group_id:
+            return None
+        if not self._is_allowed(msg):
+            return None
+        settings = self.settings.get(msg.group_id)
+        if not settings["intent_enabled"]:
+            return None
+        if not self.settings.cooldown_ok(msg.group_id):
+            return None
+        if not looks_like_intent(msg.text):
+            return None
+
+        cats = classify_intent_keywords(msg.text)
+        logger.info("scan_intent : pré-filtre OK (%s/%s) — cats=%s",
+                    msg.group_id, msg.user_id, cats)
+
+        # Récupérer les N derniers messages du groupe pour donner du contexte
+        # au scan. Le LLM a besoin de voir le fil collectif, pas juste le
+        # message courant, pour juger « ≥ 2 membres distincts ».
+        conv = self.memory.get(msg.platform, msg.user_id, msg.group_id)
+        history = conv.get_history()
+        recent = history[-12:]  # ~3-4 échanges typiques
+
+        try:
+            result = await self.llm.chat(
+                messages = recent,
+                system   = self._SCAN_SYSTEM_PROMPT,
+                tools    = SCAN_TOOLS,
+            )
+        except Exception as exc:
+            logger.warning("scan_intent : LLM indisponible — %s", exc)
+            return None
+
+        # Cherche un tool call propose_intent
+        for tc in result.tool_calls:
+            if tc.name != "propose_intent":
+                continue
+            args = tc.arguments or {}
+            suggestion = (args.get("suggestion") or "").strip()
+            action_type = args.get("action_type") or "other"
+            if not suggestion:
+                logger.info("scan_intent : tool call sans suggestion, ignoré")
+                return None
+            # Le LLM a parlé : on note le cooldown et on retourne le texte.
+            self.settings.mark_intent_fired(msg.group_id)
+            logger.info("scan_intent → %s : %s", action_type, suggestion[:80])
+            return f"💡 {suggestion}"
+
+        # Aucun propose_intent : le LLM a jugé qu'il fallait se taire.
+        logger.info("scan_intent : LLM s'est tu (cats=%s)", cats)
+        return None
+
+    async def _cmd_intent(self, msg: Message, arg: str) -> Response:
+        """Active/désactive la détection d'intention spontanée pour ce groupe.
+
+        - `/intent` → état actuel
+        - `/intent on`  → réactive
+        - `/intent off` → désactive (GAB ne fait plus que répondre quand sollicité)
+        """
+        if not msg.group_id:
+            return Response(text="ℹ️ `/intent` ne fonctionne qu'en groupe.")
+        arg = arg.strip().lower()
+        if arg in ("on", "activer", "active"):
+            self.settings.set_intent_enabled(msg.group_id, True)
+            return Response(text="🎩 Détection d'intention *activée*. "
+                                 "Je proposerai parfois des actions spontanément.")
+        if arg in ("off", "désactiver", "desactiver", "stop"):
+            self.settings.set_intent_enabled(msg.group_id, False)
+            return Response(text="🎩 Détection d'intention *désactivée*. "
+                                 "Je ne parlerai plus que sur sollicitation.")
+        s = self.settings.get(msg.group_id)
+        state = "activée ✅" if s["intent_enabled"] else "désactivée ❌"
+        last = s["last_intent_at"]
+        last_str = (f"\nDernière intervention spontanée : `{last[:16].replace('T', ' ')}`"
+                    if last else "")
+        return Response(
+            text=f"🎩 Détection d'intention : *{state}*.{last_str}\n\n"
+                 "Usage : `/intent on` | `/intent off`."
+        )
 
     # ── System prompt enrichi du contexte temporel ───────────────────────────
 

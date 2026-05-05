@@ -153,6 +153,12 @@ CREATE TABLE IF NOT EXISTS facts (
 
 CREATE INDEX IF NOT EXISTS idx_facts_group
     ON facts(group_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS group_settings (
+    group_id        TEXT PRIMARY KEY,
+    intent_enabled  INTEGER NOT NULL DEFAULT 1,
+    last_intent_at  TEXT
+);
 """
 
 
