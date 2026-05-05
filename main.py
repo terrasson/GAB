@@ -17,6 +17,7 @@ import uvicorn
 from config import Config
 from core.agent import GabAgent
 from core.reminders import ReminderScheduler
+from core.nudges import NudgeScheduler
 from platforms.telegram import TelegramPlatform
 from platforms.whatsapp import WhatsAppPlatform
 from platforms.discord import DiscordPlatform
@@ -89,18 +90,31 @@ async def run() -> None:
     scheduler = ReminderScheduler(agent.reminders, reminder_dispatch)
     logger.info("✅ Scheduler de rappels prêt")
 
+    # ── Scheduler de nudges (palier 2.3 — relance des décisions abandonnées) ─
+    # Réutilise le même dispatch que les rappels (même mécanisme send_message
+    # par plateforme). La plateforme par défaut est telegram puisque c'est
+    # celle qui a la persistence des polls aujourd'hui ; à étendre si besoin.
+    nudge_scheduler = NudgeScheduler(
+        llm      = agent.llm,
+        settings = agent.settings,
+        dispatch = reminder_dispatch,
+        platform = "telegram",
+    )
+    logger.info("✅ Scheduler de nudges prêt")
+
     logger.info("🎩 GAB démarre sur %d plateforme(s)…", len(active_platforms))
 
-    # Démarrage de toutes les plateformes + scheduler + serveur HTTP en parallèle
+    # Démarrage de toutes les plateformes + schedulers + serveur HTTP en parallèle
     tasks = [asyncio.create_task(p.start()) for p in active_platforms]
     tasks.append(asyncio.create_task(scheduler.run()))
+    tasks.append(asyncio.create_task(nudge_scheduler.run()))
     tasks.append(asyncio.create_task(uvi_server.serve()))
 
     # Arrêt propre sur SIGINT / SIGTERM
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, lambda: asyncio.ensure_future(
-            _shutdown(active_platforms, tasks, scheduler)
+            _shutdown(active_platforms, tasks, scheduler, nudge_scheduler)
         ))
 
     await asyncio.gather(*tasks, return_exceptions=True)
@@ -108,10 +122,12 @@ async def run() -> None:
     logger.info("🎩 GAB arrêté. Au revoir, maître.")
 
 
-async def _shutdown(platforms, tasks, scheduler=None) -> None:
+async def _shutdown(platforms, tasks, scheduler=None, nudge_scheduler=None) -> None:
     logger.info("🛑 Arrêt en cours…")
     if scheduler is not None:
         scheduler.stop()
+    if nudge_scheduler is not None:
+        nudge_scheduler.stop()
     for p in platforms:
         try:
             await p.stop()

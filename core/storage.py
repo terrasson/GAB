@@ -159,6 +159,17 @@ CREATE TABLE IF NOT EXISTS group_settings (
     intent_enabled  INTEGER NOT NULL DEFAULT 1,
     last_intent_at  TEXT
 );
+
+CREATE TABLE IF NOT EXISTS nudges_sent (
+    target_type   TEXT NOT NULL,
+    target_id     TEXT NOT NULL,
+    group_id      TEXT NOT NULL,
+    sent_at       TEXT NOT NULL,
+    PRIMARY KEY (target_type, target_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_nudges_group
+    ON nudges_sent(group_id, sent_at DESC);
 """
 
 
