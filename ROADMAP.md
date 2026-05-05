@@ -117,12 +117,31 @@ avec triple verrou anti-hallucination ("n'invente pas", périmètre temporel,
 > maintenant" qui s'écrase quand on la corrige. C'est ce qui transforme
 > GAB d'un chatbot conversationnel en agent qui retient vraiment.
 
-#### 2.1 — Mémoire sémantique structurée (foundation)
+#### 2.1 — Mémoire sémantique structurée (foundation) ✅
 
 > **Distinction clé** :
 > - Mémoire épisodique = "ce qui a été dit et quand" (déjà en SQLite via
 >   palier 1.1)
-> - Mémoire sémantique = "ce qui est vrai actuellement" (à construire)
+> - Mémoire sémantique = "ce qui est vrai actuellement" (livré 2026-05-04)
+
+Livré en prod le 2026-05-04 (commit `67450e9`). Choix d'archi : **extraction
+active** — le LLM invoque `set_facts` dans le MÊME tour que sa réponse à
+l'utilisateur, pas d'appel LLM séparé pour scanner les faits. Pattern
+multi-tool-calls supporté nativement par Manifest/DeepSeek : un même tour
+peut combiner réponse texte + `set_facts` + `create_event` si pertinent.
+
+Side-effect silencieux : `set_facts`/`forget_fact` ne renvoient pas de
+message à l'utilisateur — ils écrivent en mémoire et n'interrompent pas
+le flow conversationnel ou un autre tool actif (`create_*`).
+
+Convention de clés effective :
+- `event.<nom>.{date, time, place, attendees, notes}`
+- `member.<prénom>.{allergies, preferences, role}`
+- `group.{rules, language, name, wifi_code}`
+- `trip.<destination>.{dates, accommodation, transport}`
+
+Commande debug `/facts` (lister) et `/facts forget <key>` (supprimer)
+livrées en bonus.
 
 ##### Architecture proposée
 
