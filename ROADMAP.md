@@ -225,11 +225,15 @@ Cas d'usage couverts :
 - ✅ « faut pas oublier de réserver le train » repris → propose un rappel
 - ✅ « on est combien pour samedi ? » → consulte `/members` (action_type=members)
 
-#### 2.3 — Personnalité "chef de groupe" ✅ (heuristique 1 livrée)
+#### 2.3 — Personnalité "chef de groupe" ✅ (3 heuristiques livrées)
 
-Livré en prod le 2026-05-05 (commit `c7630ff`). **Validé en condition
-réelle** le même jour : les sondages du week-end précédent non tranchés
-ont été relancés spontanément par GAB.
+Heuristique 1 livrée en prod le 2026-05-05 (commit `c7630ff`).
+**Validée en condition réelle** le même jour : les sondages du
+week-end précédent non tranchés ont été relancés spontanément par GAB.
+
+Heuristiques 2 et 3 livrées le 2026-05-06 dans la foulée, même
+architecture (`nudges_sent` était déjà extensible — pas de migration
+de schema).
 
 Architecture : `NudgeScheduler` asyncio périodique (poll défaut 30 min)
 qui scanne l'état des objets persistants du groupe (commencé par les
@@ -251,12 +255,17 @@ Heuristique 1 livrée : sondage non clôturé > `NUDGE_POLL_AGE_HOURS`
 formuler le texte de relance (1 appel par poll candidat, ~0-3/jour
 pour un groupe actif). Fallback déterministe si LLM down.
 
-Heuristiques restantes (à venir) :
-- [ ] **2.3.b** — Événement imminent dans 24-48h, le groupe n'en a pas
-      reparlé depuis sa création → ping de confirmation (« Rappel :
-      [event] [quand]. Tout le monde est OK ? »).
-- [ ] **2.3.c** — Liste partagée > 48h avec > 50 % d'items non claimés →
-      relance (« Il reste [items] à se répartir. »).
+Heuristiques 2 et 3 :
+- [x] **2.3.b** — Événement imminent dans `NUDGE_EVENT_HORIZON_HOURS`
+      (défaut 24h). Détection SQL pure : `cancelled_at IS NULL` et
+      `starts_at ∈ [now, now+24h]` et absent de `nudges_sent`. L'anti-
+      doublon garantit qu'on ne pingue qu'UNE fois par event (le
+      critère « pas reparlé depuis création » a été simplifié — coûteux
+      à détecter, gain marginal).
+- [x] **2.3.c** — Liste non close > `NUDGE_LIST_AGE_HOURS` (défaut 48h)
+      avec ratio claimed/total < `NUDGE_LIST_CLAIM_RATIO` (défaut 0.5)
+      et au moins 1 item libre. Relance qui cite jusqu'à 3 items libres
+      pour ancrer le LLM (anti-hallucination d'items inexistants).
 
 #### 2.4 — Récap multi-jours / multi-membres
 

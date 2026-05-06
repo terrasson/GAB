@@ -6,21 +6,29 @@ Distinction avec le palier 2.2 (intent.py) :
 - 2.3 = scan PÉRIODIQUE sur l'état des objets du groupe (sondages, listes,
   événements), GAB *relance* sur décision pendante abandonnée.
 
-Heuristique v1 implémentée : **sondage sans tranche claire**. Un sondage
-ouvert depuis plus de `NUDGE_POLL_AGE_HOURS` heures (défaut 24) avec
-ratio max/total < `NUDGE_POLL_TRANCHE_RATIO` (défaut 0.6) est candidat.
-Heuristiques 2 (événement imminent) et 3 (liste mi-claimée) à venir.
+Trois heuristiques implémentées :
+- **2.3.a — Sondage sans tranche claire** : poll ouvert depuis plus de
+  `NUDGE_POLL_AGE_HOURS` (défaut 24) avec ratio max/total <
+  `NUDGE_POLL_TRANCHE_RATIO` (défaut 0.6).
+- **2.3.b — Événement imminent** : event non annulé dont `starts_at` tombe
+  dans `[now, now + NUDGE_EVENT_HORIZON_HOURS]` (défaut 24h). Ping de
+  confirmation unique, l'anti-doublon `nudges_sent` garantit qu'on ne
+  pingue qu'une fois par event.
+- **2.3.c — Liste mi-claimée** : liste non close, créée il y a >
+  `NUDGE_LIST_AGE_HOURS` (défaut 48), avec ratio claimed/total <
+  `NUDGE_LIST_CLAIM_RATIO` (défaut 0.5).
 
 Garde-fous (mêmes que 2.2 + un de plus) :
 1. Le groupe doit être whitelisté (sinon GAB ne devrait pas y parler du tout).
 2. `intent_enabled` ON (le `/intent off` désactive aussi les nudges).
 3. Cooldown global respecté (`GroupSettings.cooldown_ok`).
-4. **Anti-doublon** : un même sondage n'est nudgé qu'UNE fois (table
-   `nudges_sent`). Sinon GAB harcellerait un poll abandonné toutes les 30
-   minutes.
+4. **Anti-doublon** : un même objet n'est nudgé qu'UNE fois (table
+   `nudges_sent`, PK = `(target_type, target_id)`). Sinon GAB harcellerait
+   un poll abandonné toutes les 30 minutes.
 
-Coût LLM : 1 appel par poll candidat (rare : ~0-3 par jour pour un
-groupe actif). La détection elle-même est purement SQL, gratuite.
+Coût LLM : 1 appel par candidat (rare : ~0-3 par jour pour un groupe
+actif, toutes heuristiques confondues). La détection elle-même est
+purement SQL, gratuite.
 """
 
 import os
@@ -207,6 +215,205 @@ async def generate_poll_nudge(llm, poll: dict) -> str:
     )
 
 
+# ── Heuristique 2 : événement imminent ─────────────────────────────────────
+
+
+def find_imminent_events() -> list[dict]:
+    """Retourne les événements candidats à un nudge de confirmation :
+    - non annulés (`cancelled_at IS NULL`)
+    - `starts_at` dans `[now, now + NUDGE_EVENT_HORIZON_HOURS]`
+    - jamais nudgés (absent de `nudges_sent` avec target_type='event')
+
+    Renvoie : {id, group_id, title, starts_at, location}.
+    """
+    horizon_h = _env_int("NUDGE_EVENT_HORIZON_HOURS", 24)
+    now       = datetime.now(timezone.utc)
+    now_iso   = now.isoformat()
+    cutoff    = (now + timedelta(hours=horizon_h)).isoformat()
+
+    with connection() as c:
+        rows = c.execute(
+            "SELECT e.id, e.group_id, e.title, e.starts_at, e.location "
+            "FROM events e "
+            "LEFT JOIN nudges_sent n "
+            "  ON n.target_type='event' AND n.target_id=e.id "
+            "WHERE e.cancelled_at IS NULL "
+            "  AND e.starts_at >= ? "
+            "  AND e.starts_at <= ? "
+            "  AND n.target_id IS NULL "
+            "ORDER BY e.starts_at ASC",
+            (now_iso, cutoff),
+        ).fetchall()
+
+    return [
+        {
+            "id":         r["id"],
+            "group_id":   r["group_id"],
+            "title":      r["title"],
+            "starts_at":  r["starts_at"],
+            "location":   r["location"] or "",
+        }
+        for r in rows
+    ]
+
+
+_NUDGE_EVENT_SYSTEM_PROMPT = (
+    "Tu es GAB, concierge-agent d'un groupe humain. On t'appelle pour "
+    "confirmer un événement qui approche. Ton message DOIT :\n"
+    "- Être très court (1-2 phrases).\n"
+    "- Rappeler l'événement et son horaire.\n"
+    "- Inviter à confirmer SANS forcer.\n"
+    "- Se terminer par une question fermée (oui/non, tout le monde est OK ?).\n"
+    "- Ne PAS être servile, ne PAS s'excuser.\n"
+    "Tu réponds UNIQUEMENT par le texte, sans préfixe, sans guillemets. "
+    "Le système ajoutera 💡 devant."
+)
+
+
+async def generate_event_nudge(llm, event: dict) -> str:
+    """Demande au LLM un message de confirmation court pour un event imminent.
+
+    Fallback déterministe si LLM down.
+    """
+    from core.events import format_event_when_fr
+    when = format_event_when_fr(event["starts_at"])
+    location_str = f", {event['location']}" if event["location"] else ""
+    user_msg = (
+        f"Événement à venir dans un groupe.\n"
+        f"Titre : « {event['title']} »\n"
+        f"Quand : {when}{location_str}.\n"
+        f"Formule UN message court qui invite le groupe à confirmer que "
+        f"tout le monde est toujours partant."
+    )
+    try:
+        result = await llm.chat(
+            messages=[{"role": "user", "content": user_msg}],
+            system=_NUDGE_EVENT_SYSTEM_PROMPT,
+        )
+        text = (result.text or "").strip()
+        if text:
+            return text
+    except Exception as exc:
+        logger.warning("LLM indisponible pour event nudge — fallback : %s", exc)
+
+    base = f"Rappel : *{event['title']}* {when}{location_str}."
+    return f"{base} Tout le monde est toujours OK ?"
+
+
+# ── Heuristique 3 : liste mi-claimée ───────────────────────────────────────
+
+
+def find_unclaimed_lists() -> list[dict]:
+    """Retourne les listes candidates à un nudge :
+    - non closes (`closed_at IS NULL`)
+    - créées il y a > `NUDGE_LIST_AGE_HOURS`
+    - jamais nudgées (absent de `nudges_sent` avec target_type='list')
+    - ratio claimed/total < `NUDGE_LIST_CLAIM_RATIO`
+    - au moins 1 item libre (sinon rien à relancer)
+
+    Renvoie : {id, group_id, title, total, claimed, free_labels}.
+    """
+    age_h     = _env_int("NUDGE_LIST_AGE_HOURS", 48)
+    ratio_max = _env_float("NUDGE_LIST_CLAIM_RATIO", 0.5)
+    cutoff    = (datetime.now(timezone.utc) - timedelta(hours=age_h)).isoformat()
+
+    candidates: list[dict] = []
+    with connection() as c:
+        rows = c.execute(
+            "SELECT l.id, l.group_id, l.title "
+            "FROM lists l "
+            "LEFT JOIN nudges_sent n "
+            "  ON n.target_type='list' AND n.target_id=l.id "
+            "WHERE l.closed_at IS NULL "
+            "  AND l.created_at <= ? "
+            "  AND n.target_id IS NULL "
+            "ORDER BY l.created_at ASC",
+            (cutoff,),
+        ).fetchall()
+
+        for r in rows:
+            list_id  = r["id"]
+            group_id = r["group_id"]
+            title    = r["title"]
+
+            items = c.execute(
+                "SELECT label, claimer_id FROM list_items "
+                "WHERE list_id=? ORDER BY item_index ASC",
+                (list_id,),
+            ).fetchall()
+            total   = len(items)
+            if total == 0:
+                continue
+            claimed = sum(1 for i in items if i["claimer_id"] is not None)
+            ratio   = claimed / total
+            if ratio >= ratio_max:
+                continue
+            free_labels = [i["label"] for i in items if i["claimer_id"] is None]
+            if not free_labels:
+                continue
+
+            candidates.append({
+                "id":          list_id,
+                "group_id":    group_id,
+                "title":       title or "Liste",
+                "total":       total,
+                "claimed":     claimed,
+                "free_labels": free_labels,
+            })
+
+    return candidates
+
+
+_NUDGE_LIST_SYSTEM_PROMPT = (
+    "Tu es GAB, concierge-agent d'un groupe humain. On t'appelle pour "
+    "relancer DISCRÈTEMENT une liste partagée à moitié vide. Ton message "
+    "DOIT :\n"
+    "- Être très court (1-2 phrases).\n"
+    "- Rappeler le titre de la liste et qu'il reste des items à se "
+    "  répartir (cite-en au plus 3, exactement comme fournis).\n"
+    "- Inviter sans forcer (préfère « qui prend… ? » à « il faut… »).\n"
+    "- Ne PAS inventer d'items qui ne sont pas dans la liste fournie.\n"
+    "- Ne PAS s'excuser, ne PAS être servile.\n"
+    "Tu réponds UNIQUEMENT par le texte, sans préfixe, sans guillemets. "
+    "Le système ajoutera 💡 devant."
+)
+
+
+async def generate_list_nudge(llm, lst: dict) -> str:
+    """Demande au LLM un message de relance court pour une liste mi-claimée.
+
+    Fallback déterministe si LLM down.
+    """
+    free_preview = ", ".join(lst["free_labels"][:3])
+    if len(lst["free_labels"]) > 3:
+        free_preview += "…"
+    user_msg = (
+        f"Liste partagée à moitié vide dans un groupe.\n"
+        f"Titre : « {lst['title']} »\n"
+        f"État : {lst['claimed']}/{lst['total']} items pris.\n"
+        f"Items encore libres (ne cite QUE ceux-là) : {free_preview}.\n"
+        f"Formule UNE relance courte qui invite le groupe à se répartir "
+        f"les items restants."
+    )
+    try:
+        result = await llm.chat(
+            messages=[{"role": "user", "content": user_msg}],
+            system=_NUDGE_LIST_SYSTEM_PROMPT,
+        )
+        text = (result.text or "").strip()
+        if text:
+            return text
+    except Exception as exc:
+        logger.warning("LLM indisponible pour list nudge — fallback : %s", exc)
+
+    remaining = lst["total"] - lst["claimed"]
+    return (
+        f"Sur la liste *{lst['title']}*, il reste {remaining} item"
+        f"{'s' if remaining > 1 else ''} à se répartir "
+        f"({free_preview}). Qui prend quoi ?"
+    )
+
+
 # ── Scheduler asyncio ──────────────────────────────────────────────────────
 
 
@@ -251,31 +458,44 @@ class NudgeScheduler:
         self._stop.set()
 
     async def _tick(self) -> None:
-        candidates = find_stalled_polls()
-        if not candidates:
+        # 3 sources de candidats, dispatchées dans le même cycle. Tous les
+        # garde-fous (intent_enabled, cooldown, anti-doublon) sont identiques.
+        sources = (
+            ("poll",  find_stalled_polls,    generate_poll_nudge),
+            ("event", find_imminent_events,  generate_event_nudge),
+            ("list",  find_unclaimed_lists,  generate_list_nudge),
+        )
+        for target_type, finder, generator in sources:
+            candidates = finder()
+            if not candidates:
+                continue
+            logger.info("💡 %d %s candidat(s) au nudge", len(candidates), target_type)
+            for cand in candidates:
+                await self._process_candidate(target_type, cand, generator)
+
+    async def _process_candidate(self, target_type, cand, generator) -> None:
+        group_id = cand["group_id"]
+        settings = self.settings.get(group_id)
+        if not settings["intent_enabled"]:
+            logger.info("💡 nudge skip %s/%s : intent OFF", target_type, group_id)
+            # On marque sent pour ne pas re-tester chaque tick.
+            mark_nudge_sent(target_type, cand["id"], group_id)
             return
-        logger.info("💡 %d sondage(s) candidat(s) au nudge", len(candidates))
-        for poll in candidates:
-            group_id = poll["group_id"]
-            settings = self.settings.get(group_id)
-            if not settings["intent_enabled"]:
-                logger.info("💡 nudge skip %s : intent OFF", group_id)
-                # On marque quand même sent pour ne pas re-tester chaque tick.
-                mark_nudge_sent("poll", poll["id"], group_id)
-                continue
-            if not self.settings.cooldown_ok(group_id):
-                logger.info("💡 nudge skip %s : cooldown actif", group_id)
-                continue
+        if not self.settings.cooldown_ok(group_id):
+            logger.info("💡 nudge skip %s/%s : cooldown actif", target_type, group_id)
+            return
 
-            text = await generate_poll_nudge(self.llm, poll)
-            full = f"💡 {text}"
-            try:
-                await self.dispatch(self.platform, group_id, full)
-            except Exception as exc:
-                logger.error("💡 dispatch nudge échoué pour %s : %s", group_id, exc)
-                # On NE marque PAS sent → retry au prochain tick.
-                continue
+        text = await generator(self.llm, cand)
+        full = f"💡 {text}"
+        try:
+            await self.dispatch(self.platform, group_id, full)
+        except Exception as exc:
+            logger.error("💡 dispatch nudge échoué (%s/%s) : %s",
+                         target_type, group_id, exc)
+            # On NE marque PAS sent → retry au prochain tick.
+            return
 
-            mark_nudge_sent("poll", poll["id"], group_id)
-            self.settings.mark_intent_fired(group_id)
-            logger.info("💡 nudge envoyé : poll=%s group=%s", poll["id"], group_id)
+        mark_nudge_sent(target_type, cand["id"], group_id)
+        self.settings.mark_intent_fired(group_id)
+        logger.info("💡 nudge envoyé : %s=%s group=%s",
+                    target_type, cand["id"], group_id)
