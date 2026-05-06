@@ -134,6 +134,7 @@ class TelegramPlatform(BasePlatform):
         app.add_handler(CommandHandler("agenda",       self._on_command))
         app.add_handler(CommandHandler("facts",        self._on_command))
         app.add_handler(CommandHandler("intent",       self._on_command))
+        app.add_handler(CommandHandler("recap",        self._on_command))
         app.add_handler(CallbackQueryHandler(self._on_button))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message))
         app.add_handler(ChatMemberHandler(self._on_chat_member, ChatMemberHandler.CHAT_MEMBER))

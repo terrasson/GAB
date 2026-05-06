@@ -267,12 +267,26 @@ Heuristiques 2 et 3 :
       et au moins 1 item libre. Relance qui cite jusqu'à 3 items libres
       pour ancrer le LLM (anti-hallucination d'items inexistants).
 
-#### 2.4 — Récap multi-jours / multi-membres
+#### 2.4 — Récap multi-jours / multi-membres ✅
 
-- [ ] `/recap` ou intervention spontanée : "voici ce qui s'est dit cette
-      semaine, voici les décisions actées, voici ce qu'il reste à trancher"
-- [ ] Utilise la mémoire sémantique (2.1) pour les décisions actées et
-      l'épisodique pour le narratif
+Livré le 2026-05-06. Commande slash `/recap [jours]` (défaut 7,
+bornes 1-90). Composition en 3 sections markdown :
+
+- ✅ **Acté** — sondages clôturés sur la fenêtre + events à venir +
+  faits sémantiques (mémoire 2.1, 8 plus récents).
+- 💬 **Discuté** — synthèse narrative LLM (3-4 phrases) basée sur les
+  messages users de la fenêtre. Fallback déterministe si LLM down.
+- ❓ **Reste à trancher** — sondages ouverts non tranchés + listes
+  non closes mi-claimées.
+
+1 appel LLM par /recap (uniquement la synthèse narrative). Tout le
+reste est SQL pur. Limite connue : `MAX_HISTORY = 20` dans
+`core/memory.py` plafonne le narratif aux 20 derniers messages —
+suffisant pour des groupes peu actifs, à retravailler si besoin
+(table `messages` séparée du trim conversationnel, par ex).
+
+- [ ] Mode spontané (2.4.b) : récap auto le dimanche soir si activité
+      dans la semaine — non livré, à voir selon usage.
 
 #### 2.5 — Médiation douce en cas de désaccord détecté
 

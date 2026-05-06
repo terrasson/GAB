@@ -81,6 +81,7 @@ class GabAgent:
         "/agenda":      "_cmd_agenda",
         "/facts":       "_cmd_facts",
         "/intent":      "_cmd_intent",
+        "/recap":       "_cmd_recap",
     }
 
     def __init__(self, cfg: Config):
@@ -181,7 +182,8 @@ class GabAgent:
             "`/agenda annuler <id>` — Annuler un événement\n"
             "`/facts` — Voir la mémoire sémantique du groupe\n"
             "`/facts forget <key>` — Oublier un fait précis\n"
-            "`/intent` — Détection d'intention spontanée (on/off)\n\n"
+            "`/intent` — Détection d'intention spontanée (on/off)\n"
+            "`/recap [jours]` — Récap multi-jours du groupe (défaut 7)\n\n"
             "💬 Vous pouvez aussi m'écrire librement."
         ))
 
@@ -409,6 +411,33 @@ class GabAgent:
             )
         facts = self.facts.list_for_group(msg.group_id)
         return Response(text=FactStore.format_for_debug(facts))
+
+    async def _cmd_recap(self, msg: Message, arg: str) -> Response:
+        """Récap multi-jours du groupe (palier 2.4).
+
+        - `/recap`   → 7 derniers jours (défaut)
+        - `/recap 3` → 3 derniers jours
+        - `/recap 30` → mois écoulé
+
+        Composition : faits + polls clos + events à venir (Acté), synthèse
+        narrative LLM des messages (Discuté), polls ouverts + listes
+        mi-claimées (À trancher).
+        """
+        if not msg.group_id:
+            return Response(text="ℹ️ `/recap` ne fonctionne qu'en groupe.")
+        days = 7
+        arg = arg.strip()
+        if arg:
+            try:
+                days = int(arg.split()[0])
+            except (ValueError, IndexError):
+                return Response(text=(
+                    "Usage : `/recap` ou `/recap <jours>` "
+                    "(ex : `/recap 3`, `/recap 30`)."
+                ))
+        from core.recap import build_recap
+        text = await build_recap(msg.group_id, days, self.llm)
+        return Response(text=text)
 
     async def _cmd_members(self, msg: Message, _: str) -> Response:
         if not msg.group_id:
