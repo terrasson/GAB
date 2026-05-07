@@ -331,12 +331,17 @@ sentencieux ou maladroit).
 
 #### 3a — Recherche & comparaison (le LLM appelle des outils)
 
-Prérequis technique : étendre `LLMClient.chat()` pour supporter le
-**function calling** (format OpenAI tools). Manifest le supporte déjà.
-Architecture : un dossier `tools/` avec un fichier par intégration,
-chacun expose une fonction `execute(args) → str` documentée pour le LLM.
+**Architecture livrée 2026-05-07** : dossier `integrations/` (et non
+`tools/` initialement prévu — collision avec `core/tools.py` qui héberge
+les tool definitions LLM internes). Chaque intégration expose un dict
+`*_TOOL` enregistré dans `GROUP_TOOLS`/`DM_TOOLS` + une coroutine
+`execute(args) -> str` qui retourne du texte *destiné au LLM* (pas au
+user — le LLM reformule). Round-trip implémenté dans
+`core/agent.py::_exec_get_weather_round_trip` : LLM → tool_call → exec →
+tool_result → LLM 2e tour → réponse user.
 
-- [ ] **Météo** ([Open-Meteo](https://open-meteo.com), gratuit sans clé)
+- [x] **Météo** ([Open-Meteo](https://open-meteo.com), gratuit sans clé)
+      — geocoding + forecast 16j max, FR concis, fallback sur erreurs.
 - [ ] **Restaurant / activité** (Google Places API, Yelp Fusion)
 - [ ] **Tarifs train** (SNCF Connect API ; Trainline en B2B plus tard)
 - [ ] **Tarifs vol** (Amadeus Self-Service ; Kiwi Tequila ; Skyscanner B2B plus tard)

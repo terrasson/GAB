@@ -17,16 +17,9 @@ décrire l'appel en texte ».
 """
 
 # Préambule commun rappelant qu'il faut INVOQUER, pas DÉCRIRE.
-_INVOKE_RULE = (
-    "IMPORTANT (contrat d'invocation) : pour utiliser cette fonction, tu DOIS "
-    "l'invoquer réellement via le mécanisme tool-calling de l'API. Tu ne dois "
-    "JAMAIS répondre en texte avec une phrase qui décrit l'appel "
-    "(« Sondage créé : … », « J'ai créé la liste », « Voici votre rappel : … »). "
-    "Le système GAB n'exécute aucune action à partir de ton texte — seul un vrai "
-    "tool-call structuré déclenche la création de l'objet et l'affichage des "
-    "boutons. Si tu hésites entre répondre en texte et invoquer la fonction, "
-    "et que tu as toutes les informations nécessaires, INVOQUE.\n\n"
-)
+# Extrait dans un module à part pour qu'une intégration externe puisse
+# le réutiliser sans créer d'import circulaire.
+from integrations._invoke_rule import INVOKE_RULE as _INVOKE_RULE
 
 CREATE_POLL_TOOL = {
     "type": "function",
@@ -503,10 +496,15 @@ PROPOSE_MEDIATION_TOOL = {
 }
 
 
+# Intégrations externes (palier 3) — importées paresseusement pour éviter
+# une dépendance dure si le module n'est pas encore déployé sur une instance.
+from integrations.weather import GET_WEATHER_TOOL  # noqa: E402
+
 GROUP_TOOLS: list[dict] = [
     CREATE_POLL_TOOL, CREATE_REMINDER_TOOL, CREATE_LIST_TOOL, CREATE_EVENT_TOOL,
     SET_FACTS_TOOL, FORGET_FACT_TOOL,
+    GET_WEATHER_TOOL,
 ]
-DM_TOOLS:    list[dict] = [CREATE_REMINDER_TOOL]
+DM_TOOLS:    list[dict] = [CREATE_REMINDER_TOOL, GET_WEATHER_TOOL]
 SCAN_TOOLS:  list[dict] = [PROPOSE_INTENT_TOOL]
 MEDIATION_TOOLS: list[dict] = [PROPOSE_MEDIATION_TOOL]

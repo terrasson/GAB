@@ -504,6 +504,8 @@ class GabAgent:
                 return self._exec_create_list(msg, conv, tc, result.text)
             if tc.name == "create_event":
                 return self._exec_create_event(msg, conv, tc, result.text)
+            if tc.name == "get_weather":
+                return await self._exec_get_weather_round_trip(msg, conv, tc, result)
             if tc.name in ("set_facts", "forget_fact"):
                 continue  # déjà traité au-dessus
             logger.warning("Tool call inconnu ignoré : %s", tc.name)
@@ -724,6 +726,72 @@ class GabAgent:
             return
         ok = self.facts.forget(msg.group_id, key)
         logger.info("forget_fact : %s/%s → %s", msg.group_id, key, "ok" if ok else "missing")
+
+    # ── Tools d'intégration externe (palier 3) ────────────────────────────────
+
+    async def _exec_get_weather_round_trip(
+        self,
+        msg: Message,
+        conv,
+        tool_call,
+        first_result,
+    ) -> Response:
+        """Tool externe avec ROUND-TRIP : on exécute, on injecte le résultat
+        dans l'historique sous forme de message `tool`, on ré-appelle le LLM
+        pour qu'il compose la réponse user en français naturel.
+
+        Contrairement aux `create_*` (side-effect côté GAB, le LLM n'a pas
+        besoin du résultat), un `get_weather` rapporte une donnée que SEUL
+        le LLM peut reformuler proprement pour l'utilisateur.
+        """
+        import json as _json
+        from integrations.weather import execute as _exec_weather
+
+        try:
+            tool_output = await _exec_weather(tool_call.arguments or {})
+        except Exception as exc:
+            logger.error("get_weather a planté : %s", exc)
+            tool_output = "Erreur interne, impossible de récupérer la météo."
+
+        # On reconstruit l'historique avec le tool call et son résultat,
+        # au format OpenAI tool-use. `Conversation.add()` ne supporte pas
+        # le rôle `tool` ; on garde le round-trip *éphémère* (non persisté).
+        history = conv.get_history()
+        enriched = history + [
+            {
+                "role":    "assistant",
+                "content": first_result.text or "",
+                "tool_calls": [{
+                    "id":   tool_call.id,
+                    "type": "function",
+                    "function": {
+                        "name":      tool_call.name,
+                        "arguments": _json.dumps(tool_call.arguments or {}),
+                    },
+                }],
+            },
+            {
+                "role":         "tool",
+                "tool_call_id": tool_call.id,
+                "content":      tool_output,
+            },
+        ]
+
+        try:
+            final = await self.llm.chat(
+                messages = enriched,
+                system   = self._build_system_prompt(msg.group_id),
+                # Pas de tools au 2e tour : on veut une conclusion texte pure.
+            )
+        except Exception as exc:
+            logger.error("get_weather round-trip LLM KO : %s", exc)
+            # Fallback : on renvoie le résultat brut formaté pour l'user.
+            conv.add("assistant", tool_output)
+            return Response(text=tool_output)
+
+        reply = (final.text or "").strip() or tool_output
+        conv.add("assistant", reply)
+        return Response(text=reply)
 
     # ── Scan d'intention conversationnelle (palier 2.2) ──────────────────────
 
