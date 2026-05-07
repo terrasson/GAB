@@ -170,6 +170,35 @@ CREATE TABLE IF NOT EXISTS nudges_sent (
 
 CREATE INDEX IF NOT EXISTS idx_nudges_group
     ON nudges_sent(group_id, sent_at DESC);
+
+CREATE TABLE IF NOT EXISTS tickets (
+    id              TEXT PRIMARY KEY,
+    owner_id        TEXT NOT NULL,
+    group_id        TEXT,
+    shared_in_group INTEGER NOT NULL DEFAULT 0,
+    kind            TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    when_at         TEXT NOT NULL,
+    location_from   TEXT NOT NULL DEFAULT '',
+    location_to     TEXT NOT NULL DEFAULT '',
+    reference       TEXT NOT NULL DEFAULT '',
+    seat            TEXT NOT NULL DEFAULT '',
+    raw_excerpt     TEXT NOT NULL DEFAULT '',
+    file_path       TEXT,
+    reminder_id_1   TEXT,
+    reminder_id_2   TEXT,
+    platform        TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL,
+    deleted_at      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_tickets_owner
+    ON tickets(owner_id, when_at)
+    WHERE deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_tickets_group_shared
+    ON tickets(group_id, shared_in_group, when_at)
+    WHERE deleted_at IS NULL;
 """
 
 

@@ -496,6 +496,113 @@ PROPOSE_MEDIATION_TOOL = {
 }
 
 
+ADD_TICKET_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "add_ticket",
+        "description": (
+            _INVOKE_RULE +
+            "Enregistre un billet (train, vol, hôtel, événement) dans le "
+            "wallet du membre qui te parle. À utiliser quand un utilisateur "
+            "te transfère le contenu d'un mail de confirmation, te copie-"
+            "colle un récap de réservation, ou te dicte les infos d'un billet "
+            "pour qu'il soit conservé et que GAB programme automatiquement "
+            "des rappels avant le jour J.\n\n"
+            "RÈGLE ABSOLUE : tu n'inventes JAMAIS d'information. Tous les "
+            "champs viennent UNIQUEMENT de ce que l'utilisateur a écrit dans "
+            "l'échange en cours (mail forwardé, copie-colle de confirmation, "
+            "dictée explicite). Si une info essentielle manque (date, heure, "
+            "titre/destination), tu réponds en texte (pas d'appel à cette "
+            "fonction) en demandant la précision : « Quelle est la date du "
+            "voyage ? », « C'est un train ou un vol ? ».\n\n"
+            "PÉRIMÈTRE TEMPOREL : le contenu doit venir de l'échange immédiat "
+            "où l'utilisateur partage son billet. Tu n'extrais JAMAIS un "
+            "billet depuis des messages anciens du fil. Tu n'enregistres pas "
+            "non plus un billet à partir d'une discussion vague (« on prend "
+            "le train pour Lyon ») — il faut les détails concrets de la "
+            "réservation (numéro de train, heure, etc.) ou du moins date + "
+            "titre clairs.\n\n"
+            "FORMAT DE LA DATE (`when_at`) : ISO 8601 timezone-aware. Pour un "
+            "train ou un vol, c'est l'heure de DÉPART. Pour un hôtel, c'est "
+            "le check-in. Pour un événement, l'heure de début. Fuseau par "
+            "défaut : Europe/Paris (`+02:00` en heure d'été, `+01:00` en "
+            "heure d'hiver). Tu utilises la date/heure courantes injectées "
+            "dans le system prompt comme référence pour résoudre les dates "
+            "écrites en langage naturel.\n\n"
+            "La date doit être dans le futur. Si l'utilisateur partage un "
+            "billet déjà passé, tu lui fais remarquer en texte sans appeler "
+            "la fonction.\n\n"
+            "CHAMPS OPTIONNELS : `location_from`, `location_to`, `reference`, "
+            "`seat` ne sont passés QUE s'ils sont explicitement présents dans "
+            "le contenu fourni. Pas d'invention. Pour un hôtel ou un "
+            "événement, `location_from` reste vide ; on remplit `location_to` "
+            "avec l'adresse ou le lieu."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["train", "flight", "hotel", "event", "other"],
+                    "description": (
+                        "Type de billet : train, flight (vol), hotel, "
+                        "event (concert, spectacle, match…), other."
+                    ),
+                },
+                "title": {
+                    "type": "string",
+                    "description": (
+                        "Titre court et descriptif. Ex : « TGV INOUI 6815 », "
+                        "« Vol AF1234 Paris → New York », « Hôtel Mercure "
+                        "Lyon », « Concert Daft Punk Bercy »."
+                    ),
+                },
+                "when_at": {
+                    "type": "string",
+                    "description": (
+                        "Date/heure pertinente au format ISO 8601 timezone-"
+                        "aware. Train/vol = heure de départ ; hôtel = check-"
+                        "in ; événement = heure de début. "
+                        "Ex : « 2026-05-15T08:42:00+02:00 »."
+                    ),
+                },
+                "location_from": {
+                    "type": "string",
+                    "description": (
+                        "Lieu de départ (gare, aéroport, ville). Optionnel. "
+                        "Vide pour un hôtel ou un événement."
+                    ),
+                },
+                "location_to": {
+                    "type": "string",
+                    "description": (
+                        "Lieu d'arrivée / destination / adresse. Optionnel "
+                        "mais recommandé. Pour un hôtel ou un événement, on "
+                        "y met le nom + adresse du lieu."
+                    ),
+                },
+                "reference": {
+                    "type": "string",
+                    "description": (
+                        "Numéro de réservation / PNR / dossier client tel "
+                        "qu'il apparaît dans la confirmation. Optionnel."
+                    ),
+                },
+                "seat": {
+                    "type": "string",
+                    "description": (
+                        "Numéro de place / siège / cabine, si mentionné. "
+                        "Ex : « voiture 5, place 23 », « siège 12A », "
+                        "« chambre 408 ». Optionnel."
+                    ),
+                },
+            },
+            "required": ["kind", "title", "when_at"],
+        },
+    },
+}
+
+
 # Intégrations externes (palier 3) — importées paresseusement pour éviter
 # une dépendance dure si le module n'est pas encore déployé sur une instance.
 from integrations.weather import GET_WEATHER_TOOL  # noqa: E402
@@ -504,7 +611,8 @@ GROUP_TOOLS: list[dict] = [
     CREATE_POLL_TOOL, CREATE_REMINDER_TOOL, CREATE_LIST_TOOL, CREATE_EVENT_TOOL,
     SET_FACTS_TOOL, FORGET_FACT_TOOL,
     GET_WEATHER_TOOL,
+    ADD_TICKET_TOOL,
 ]
-DM_TOOLS:    list[dict] = [CREATE_REMINDER_TOOL, GET_WEATHER_TOOL]
+DM_TOOLS:    list[dict] = [CREATE_REMINDER_TOOL, GET_WEATHER_TOOL, ADD_TICKET_TOOL]
 SCAN_TOOLS:  list[dict] = [PROPOSE_INTENT_TOOL]
 MEDIATION_TOOLS: list[dict] = [PROPOSE_MEDIATION_TOOL]

@@ -23,6 +23,15 @@ from core.intents import (
 )
 from core.mediation import looks_like_tension
 from core.tools import GROUP_TOOLS, DM_TOOLS, SCAN_TOOLS, MEDIATION_TOOLS
+from core.wallet import (
+    WalletManager,
+    format_ticket_when_fr,
+    kind_label,
+    compute_reminder_times,
+    build_reminder_message,
+    get_reminder_tunables,
+    format_billets_message,
+)
 
 logger = logging.getLogger("GAB.agent")
 
@@ -83,6 +92,7 @@ class GabAgent:
         "/facts":       "_cmd_facts",
         "/intent":      "_cmd_intent",
         "/recap":       "_cmd_recap",
+        "/billets":     "_cmd_billets",
     }
 
     def __init__(self, cfg: Config):
@@ -93,6 +103,7 @@ class GabAgent:
         self.reminders = ReminderManager()
         self.lists     = ListManager()
         self.events    = EventManager()
+        self.wallet    = WalletManager()
         self.facts     = FactStore()
         self.settings  = GroupSettings()
         self.llm       = make_llm_client(cfg)
@@ -184,7 +195,9 @@ class GabAgent:
             "`/facts` — Voir la mémoire sémantique du groupe\n"
             "`/facts forget <key>` — Oublier un fait précis\n"
             "`/intent` — Détection d'intention spontanée (on/off)\n"
-            "`/recap [jours]` — Récap multi-jours du groupe (défaut 7)\n\n"
+            "`/recap [jours]` — Récap multi-jours du groupe (défaut 7)\n"
+            "`/billets` — Mes billets à venir (wallet personnel)\n"
+            "`/billets supprimer <id>` — Retirer un billet du wallet\n\n"
             "💬 Vous pouvez aussi m'écrire librement."
         ))
 
@@ -413,6 +426,44 @@ class GabAgent:
         facts = self.facts.list_for_group(msg.group_id)
         return Response(text=FactStore.format_for_debug(facts))
 
+    async def _cmd_billets(self, msg: Message, arg: str) -> Response:
+        """Wallet de billets (palier 3b v1.a).
+
+        - `/billets`                       → liste les billets futurs du membre
+        - `/billets supprimer <id>`        → supprime (logique) + annule rappels
+        - `/billets cancel <id>` (alias)   → idem
+        """
+        arg = arg.strip()
+        lower = arg.lower()
+
+        # Mode 1 : suppression
+        if lower.startswith("supprimer ") or lower.startswith("cancel ") or lower.startswith("delete "):
+            parts = arg.split(maxsplit=1)
+            if len(parts) < 2 or not parts[1].strip():
+                return Response(text="Usage : `/billets supprimer <id>`")
+            ticket_id = parts[1].strip()
+            return await self._cmd_billets_cancel(msg, ticket_id)
+
+        # Mode 2 : liste (DM ou groupe → toujours les billets de l'user courant)
+        tickets = self.wallet.list_for_owner(msg.user_id, upcoming_only=True)
+        return Response(text=format_billets_message(tickets, scope="tes prochains"))
+
+    async def _cmd_billets_cancel(self, msg: Message, ticket_id: str) -> Response:
+        ticket = self.wallet.get(ticket_id)
+        if not ticket:
+            return Response(text=f"Aucun billet trouvé avec l'id `{ticket_id}`.")
+        if ticket["owner_id"] != msg.user_id:
+            # Sécurité : seul le propriétaire peut supprimer son billet.
+            return Response(text="Ce billet ne t'appartient pas.")
+        if ticket["deleted_at"]:
+            return Response(text="Ce billet est déjà supprimé.")
+        # Annule les rappels associés s'ils existent encore
+        for rid in (ticket.get("reminder_id_1"), ticket.get("reminder_id_2")):
+            if rid:
+                self.reminders.cancel(rid)
+        self.wallet.cancel(ticket_id)
+        return Response(text=f"🗑️ Billet *{ticket['title']}* supprimé.")
+
     async def _cmd_recap(self, msg: Message, arg: str) -> Response:
         """Récap multi-jours du groupe (palier 2.4).
 
@@ -504,6 +555,8 @@ class GabAgent:
                 return self._exec_create_list(msg, conv, tc, result.text)
             if tc.name == "create_event":
                 return self._exec_create_event(msg, conv, tc, result.text)
+            if tc.name == "add_ticket":
+                return self._exec_add_ticket(msg, conv, tc, result.text)
             if tc.name == "get_weather":
                 return await self._exec_get_weather_round_trip(msg, conv, tc, result)
             if tc.name in ("set_facts", "forget_fact"):
@@ -695,6 +748,133 @@ class GabAgent:
         confirm = "\n".join(confirm_lines)
         conv.add("assistant", accompanying_text or "Événement ajouté.")
         return Response(text=confirm)
+
+    def _exec_add_ticket(self, msg: Message, conv, tool_call, accompanying_text: str) -> Response:
+        """Enregistre un billet dans le wallet du membre + crée 2 rappels
+        automatiques (J-1 18h locale, H-2 le jour J).
+
+        Pattern : side-effect silencieux côté GAB + acquittement texte.
+        Pas de round-trip LLM nécessaire — l'utilisateur sait ce qu'il a
+        envoyé, on lui confirme juste qu'on a bien tout structuré.
+        """
+        args     = tool_call.arguments or {}
+        kind     = (args.get("kind") or "").strip().lower()
+        title    = (args.get("title") or "").strip()
+        when_at  = (args.get("when_at") or "").strip()
+        loc_from = (args.get("location_from") or "").strip()
+        loc_to   = (args.get("location_to") or "").strip()
+        ref      = (args.get("reference") or "").strip()
+        seat     = (args.get("seat") or "").strip()
+
+        if kind not in ("train", "flight", "hotel", "event", "other"):
+            kind = "other"
+
+        if not title:
+            fallback = (
+                accompanying_text
+                or "Quel est le titre du billet ? Donne-moi un nom court "
+                   "(ex : « TGV INOUI 6815 », « Vol AF1234 »)."
+            )
+            conv.add("assistant", fallback)
+            return Response(text=fallback)
+
+        try:
+            when = datetime.fromisoformat(when_at)
+        except (ValueError, TypeError):
+            fallback = (
+                accompanying_text
+                or "Je n'ai pas compris la date du billet. Quelle est la "
+                   "date et l'heure du départ (ou check-in) ?"
+            )
+            conv.add("assistant", fallback)
+            return Response(text=fallback)
+
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=_TZ_PARIS)
+
+        if when <= datetime.now(_TZ_PARIS):
+            fallback = (
+                accompanying_text
+                or "Cette date est déjà passée. Je ne stocke que des billets "
+                   "à venir."
+            )
+            conv.add("assistant", fallback)
+            return Response(text=fallback)
+
+        ticket = self.wallet.create(
+            owner_id      = msg.user_id,
+            kind          = kind,
+            title         = title,
+            when_at       = when,
+            group_id      = msg.group_id,
+            platform      = msg.platform,
+            location_from = loc_from,
+            location_to   = loc_to,
+            reference     = ref,
+            seat          = seat,
+            raw_excerpt   = msg.text,
+        )
+
+        # Rappels automatiques J-D 18h locale + H-H. Si une borne est déjà
+        # passée (cas d'un billet pour demain matin → pas de J-1 18h utile),
+        # on n'enregistre que celui qui tient.
+        days_before, hours_before = get_reminder_tunables()
+        day_at, hour_at = compute_reminder_times(when, days_before, hours_before)
+
+        target_chat = msg.user_id  # privacy by default : rappel en DM à l'owner
+
+        rid_1: str | None = None
+        rid_2: str | None = None
+        if day_at is not None:
+            r = self.reminders.create(
+                platform    = msg.platform,
+                target_chat = target_chat,
+                creator_id  = msg.user_id,
+                fires_at    = day_at,
+                message     = build_reminder_message(ticket, "day"),
+            )
+            rid_1 = r["id"]
+        if hour_at is not None:
+            r = self.reminders.create(
+                platform    = msg.platform,
+                target_chat = target_chat,
+                creator_id  = msg.user_id,
+                fires_at    = hour_at,
+                message     = build_reminder_message(ticket, "hour", hours_before),
+            )
+            rid_2 = r["id"]
+        self.wallet.attach_reminders(ticket["id"], rid_1, rid_2)
+
+        when_label = format_ticket_when_fr(ticket["when_at"])
+        confirm_lines = [
+            (accompanying_text + "\n" if accompanying_text else "")
+            + f"{kind_label(kind)} *{title}* ajouté au wallet — {when_label}."
+        ]
+        details: list[str] = []
+        if loc_from and loc_to:
+            details.append(f"📍 {loc_from} → {loc_to}")
+        elif loc_to:
+            details.append(f"📍 {loc_to}")
+        if seat:
+            details.append(f"💺 {seat}")
+        if ref:
+            details.append(f"🔖 réf. {ref}")
+        confirm_lines.extend(details)
+
+        scheduled: list[str] = []
+        if rid_1:
+            scheduled.append(f"J-{days_before} 18h")
+        if rid_2:
+            scheduled.append(f"H-{hours_before}")
+        if scheduled:
+            confirm_lines.append(
+                f"⏰ Rappel{'s' if len(scheduled) > 1 else ''} programmé"
+                f"{'s' if len(scheduled) > 1 else ''} : {', '.join(scheduled)}."
+            )
+
+        confirm_lines.append(f"`id: {ticket['id']}`")
+        conv.add("assistant", accompanying_text or "Billet enregistré.")
+        return Response(text="\n".join(confirm_lines))
 
     def _exec_set_facts(self, msg: Message, tool_call) -> None:
         """Mémorise des faits en mémoire sémantique. Side-effect silencieux :
