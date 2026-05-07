@@ -458,12 +458,16 @@ class NudgeScheduler:
         self._stop.set()
 
     async def _tick(self) -> None:
-        # 3 sources de candidats, dispatchées dans le même cycle. Tous les
+        # 4 sources de candidats, dispatchées dans le même cycle. Tous les
         # garde-fous (intent_enabled, cooldown, anti-doublon) sont identiques.
+        # Le récap (palier 2.4.b) ne sort qu'une fois par semaine et a son
+        # propre format markdown — on skip le préfixe 💡 pour ce type.
+        from core.recap import find_due_recap_groups, generate_weekly_recap
         sources = (
-            ("poll",  find_stalled_polls,    generate_poll_nudge),
-            ("event", find_imminent_events,  generate_event_nudge),
-            ("list",  find_unclaimed_lists,  generate_list_nudge),
+            ("poll",  find_stalled_polls,     generate_poll_nudge),
+            ("event", find_imminent_events,   generate_event_nudge),
+            ("list",  find_unclaimed_lists,   generate_list_nudge),
+            ("recap", find_due_recap_groups,  generate_weekly_recap),
         )
         for target_type, finder, generator in sources:
             candidates = finder()
@@ -486,7 +490,8 @@ class NudgeScheduler:
             return
 
         text = await generator(self.llm, cand)
-        full = f"💡 {text}"
+        # Le récap a son propre header 📚 ; les autres types portent un 💡.
+        full = text if target_type == "recap" else f"💡 {text}"
         try:
             await self.dispatch(self.platform, group_id, full)
         except Exception as exc:

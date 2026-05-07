@@ -24,14 +24,23 @@ des groupes très actifs, on perd les messages anciens. À retravailler
 si le besoin se confirme (cf. open_threads).
 """
 
+import os
 import logging
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 from core.storage import connection
 from core.facts import FactStore
 from core.events import format_event_when_fr
 
 logger = logging.getLogger("GAB.recap")
+
+
+def _env_int(key: str, default: int) -> int:
+    try:
+        return int(os.getenv(key, str(default)))
+    except ValueError:
+        return default
 
 
 _RECAP_NARRATIVE_PROMPT = (
@@ -253,6 +262,98 @@ def _format_pending_section(
                 f"- 📝 {l['title']} _({l['claimed']}/{l['total']} pris)_"
             )
     return lines
+
+
+# ── Récap spontané (palier 2.4.b) ──────────────────────────────────────────
+
+
+def _recap_window_now() -> tuple[bool, str | None]:
+    """Si on est dans la fenêtre de tir hebdo (jour+heure cibles), retourne
+    `(True, "YYYY-WW")` (tag ISO de la semaine en cours). Sinon
+    `(False, None)`.
+
+    Tunables :
+    - `RECAP_AUTO_TZ`        (défaut Europe/Paris)
+    - `RECAP_AUTO_WEEKDAY`   (défaut 6 = dimanche, convention Python : 0=lundi)
+    - `RECAP_AUTO_HOUR_LOCAL`(défaut 19, on tire dès qu'on est ≥ cette heure)
+    """
+    tz_name        = os.getenv("RECAP_AUTO_TZ", "Europe/Paris")
+    target_weekday = _env_int("RECAP_AUTO_WEEKDAY", 6)
+    target_hour    = _env_int("RECAP_AUTO_HOUR_LOCAL", 19)
+
+    try:
+        now_local = datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        now_local = datetime.now(timezone.utc)
+
+    if now_local.weekday() != target_weekday:
+        return (False, None)
+    if now_local.hour < target_hour:
+        return (False, None)
+    iso = now_local.isocalendar()
+    return (True, f"{iso.year:04d}-W{iso.week:02d}")
+
+
+def find_due_recap_groups() -> list[dict]:
+    """Si on est dimanche soir (configurable), retourne les groupes qui
+    méritent un récap auto :
+    - activité ≥ `RECAP_AUTO_MIN_MESSAGES` messages users sur 7 jours
+    - pas encore récapés cette semaine ISO (anti-doublon `nudges_sent`
+      avec `target_id = f"{group_id}:weekly:{YYYY-WW}"`)
+
+    Renvoie : `[{id, group_id, platform, week_tag}, ...]`.
+    Hors fenêtre de tir : liste vide.
+    """
+    in_window, week_tag = _recap_window_now()
+    if not in_window or not week_tag:
+        return []
+
+    min_msg = _env_int("RECAP_AUTO_MIN_MESSAGES", 5)
+    since   = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+
+    candidates: list[dict] = []
+    with connection() as c:
+        rows = c.execute(
+            "SELECT id, platform FROM groups ORDER BY id ASC"
+        ).fetchall()
+
+        for r in rows:
+            group_id  = r["id"]
+            platform  = r["platform"]
+            target_id = f"{group_id}:weekly:{week_tag}"
+
+            already = c.execute(
+                "SELECT 1 FROM nudges_sent "
+                "WHERE target_type='recap' AND target_id=?",
+                (target_id,),
+            ).fetchone()
+            if already:
+                continue
+
+            count_row = c.execute(
+                "SELECT COUNT(*) AS c FROM messages "
+                "WHERE conv_key=? AND role='user' AND created_at>=?",
+                (f"group:{group_id}", since),
+            ).fetchone()
+            if count_row["c"] < min_msg:
+                continue
+
+            candidates.append({
+                "id":       target_id,
+                "group_id": group_id,
+                "platform": platform,
+                "week_tag": week_tag,
+            })
+
+    return candidates
+
+
+async def generate_weekly_recap(llm, cand: dict) -> str:
+    """Adapter pour `_process_candidate` du `NudgeScheduler`. Construit
+    un récap 7 jours pour le groupe candidat et préserve son préfixe
+    📚 (sans ajout de 💡 — le scheduler skipera le préfixe pour
+    `target_type='recap'`)."""
+    return await build_recap(cand["group_id"], 7, llm)
 
 
 async def build_recap(group_id: str, days: int, llm) -> str:

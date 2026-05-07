@@ -285,14 +285,40 @@ reste est SQL pur. Limite connue : `MAX_HISTORY = 20` dans
 suffisant pour des groupes peu actifs, à retravailler si besoin
 (table `messages` séparée du trim conversationnel, par ex).
 
-- [ ] Mode spontané (2.4.b) : récap auto le dimanche soir si activité
-      dans la semaine — non livré, à voir selon usage.
+- [x] **2.4.b** — Récap spontané auto. Branché en 4e source du
+      `NudgeScheduler` : si on est `RECAP_AUTO_WEEKDAY` (défaut 6 =
+      dimanche) après `RECAP_AUTO_HOUR_LOCAL` (défaut 19h, tz
+      `Europe/Paris`) et qu'un groupe a ≥ `RECAP_AUTO_MIN_MESSAGES`
+      messages users sur 7 jours, GAB envoie spontanément un
+      `/recap 7`. Anti-doublon hebdo via `nudges_sent`
+      (`target_type='recap'`, `target_id='{group_id}:weekly:{YYYY-WW}'`).
+      Garde-fous (intent_enabled, cooldown) partagés avec 2.2/2.3.
 
-#### 2.5 — Médiation douce en cas de désaccord détecté
+#### 2.5 — Médiation douce en cas de désaccord détecté ✅
 
-- [ ] Détection de tension (analyse de tonalité par le LLM)
-- [ ] GAB propose un break, reformule le désaccord en termes neutres,
-      suggère un sondage si besoin pour trancher
+Livré le 2026-05-07. Architecture symétrique à 2.2 mais avec une
+parcimonie encore plus stricte (cible ~1-2 % des messages, vs ~5 %
+pour 2.2) — le coût d'une médiation ratée est très élevé (paraître
+sentencieux ou maladroit).
+
+- [x] **Pré-filtre regex** dans `core/mediation.py` (`looks_like_tension`) :
+      insultes courtes FR, désaccord vif (« hors de question », « pas
+      du tout »), ponctuation excessive (`!!!`/`???`), caps dominant
+      (>50 % MAJ sur ≥ 8 mots).
+- [x] **Scan LLM dédié** : `agent.scan_mediation()` avec
+      `MEDIATION_TOOLS = [PROPOSE_MEDIATION_TOOL]`. System prompt
+      ultra-strict : silence par défaut, n'invoquer QUE si désaccord
+      factuel ≥ 2 personnes distinctes + ton qui monte + groupe ne
+      gère pas de lui-même. Pas de prise de parti, pas de moralisation.
+- [x] **Format de sortie** : `🤝 ` + reformulation neutre. Préfère
+      « plusieurs avis » à « vous vous disputez ». Action douce
+      (sondage / break) mais jamais d'action irréversible.
+- [x] **Garde-fous partagés** avec 2.2/2.3 : `intent_enabled`,
+      `cooldown_ok` (60 min), whitelist groupe.
+- [x] **Branchement Telegram** : appelé après `scan_intent` dans
+      `_dispatch` ; si scan_intent se tait, on tente scan_mediation.
+      Pré-filtres disjoints en pratique (positif vs négatif), donc
+      pas de double appel LLM.
 
 ### Palier 3 — Outils du concierge (intégrations externes)
 

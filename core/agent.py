@@ -21,7 +21,8 @@ from core.facts import FactStore
 from core.intents import (
     GroupSettings, looks_like_intent, classify_intent_keywords,
 )
-from core.tools import GROUP_TOOLS, DM_TOOLS, SCAN_TOOLS
+from core.mediation import looks_like_tension
+from core.tools import GROUP_TOOLS, DM_TOOLS, SCAN_TOOLS, MEDIATION_TOOLS
 
 logger = logging.getLogger("GAB.agent")
 
@@ -813,6 +814,84 @@ class GabAgent:
 
         # Aucun propose_intent : le LLM a jugé qu'il fallait se taire.
         logger.info("scan_intent : LLM s'est tu (cats=%s)", cats)
+        return None
+
+    # ── Scan de médiation douce (palier 2.5) ──────────────────────────────────
+
+    _MEDIATION_SYSTEM_PROMPT = (
+        "Tu es GAB en mode SCAN DE MÉDIATION. Tu observes en silence un fil "
+        "de conversation de groupe et tu juges si une TENSION RÉELLE entre "
+        "membres mérite une médiation douce — auquel cas tu invoques la "
+        "fonction `propose_mediation` avec une reformulation neutre.\n\n"
+        "RÈGLE D'OR — RETENUE MAXIMALE : n'invoque la fonction QUE si :\n"
+        "1. Désaccord FACTUEL et CLAIR (pas une blague, pas du sarcasme).\n"
+        "2. Au moins 2 membres distincts s'opposent dans le fil récent.\n"
+        "3. Le ton monte ou se durcit (insultes, ponctuation excessive, "
+        "   capitales, agacement répété).\n"
+        "4. Le groupe ne gère pas déjà le sujet de lui-même (humour, "
+        "   conciliation, retrait spontané).\n"
+        "Si le moindre critère manque, tu réponds en texte VIDE — pas de "
+        "fonction, pas de phrase. Le silence est ton mode par défaut "
+        "(95 % du temps).\n\n"
+        "Tu ne prends JAMAIS parti. Tu ne moralises PAS. Tu acknowledge "
+        "le désaccord et tu proposes une action douce (sondage, break, "
+        "reformulation). Préfère « plusieurs avis » à « vous vous "
+        "disputez »."
+    )
+
+    async def scan_mediation(self, msg: Message) -> str | None:
+        """Point d'entrée optionnel appelé par la plateforme APRÈS
+        `scan_intent` si celui-ci s'est tu. Retourne un texte de médiation
+        si tension détectée, sinon None.
+
+        Pipeline parallèle à scan_intent :
+        1. Garde-fous : groupe + whitelist + intent_enabled + cooldown.
+        2. Pré-filtre regex `looks_like_tension` (cheap, ~1-2 % match).
+        3. Scan LLM dédié avec `MEDIATION_TOOLS`.
+        4. Vérification du tool call propose_mediation.
+        """
+        if not msg.group_id:
+            return None
+        if not self._is_allowed(msg):
+            return None
+        settings = self.settings.get(msg.group_id)
+        if not settings["intent_enabled"]:
+            return None
+        if not self.settings.cooldown_ok(msg.group_id):
+            return None
+        if not looks_like_tension(msg.text):
+            return None
+
+        logger.info("scan_mediation : pré-filtre OK (%s/%s)",
+                    msg.group_id, msg.user_id)
+
+        conv = self.memory.get(msg.platform, msg.user_id, msg.group_id)
+        history = conv.get_history()
+        recent  = history[-12:]
+
+        try:
+            result = await self.llm.chat(
+                messages = recent,
+                system   = self._MEDIATION_SYSTEM_PROMPT,
+                tools    = MEDIATION_TOOLS,
+            )
+        except Exception as exc:
+            logger.warning("scan_mediation : LLM indisponible — %s", exc)
+            return None
+
+        for tc in result.tool_calls:
+            if tc.name != "propose_mediation":
+                continue
+            args = tc.arguments or {}
+            reformulation = (args.get("reformulation") or "").strip()
+            if not reformulation:
+                logger.info("scan_mediation : tool call sans reformulation, ignoré")
+                return None
+            self.settings.mark_intent_fired(msg.group_id)
+            logger.info("scan_mediation → %s", reformulation[:80])
+            return f"🤝 {reformulation}"
+
+        logger.info("scan_mediation : LLM s'est tu")
         return None
 
     async def _cmd_intent(self, msg: Message, arg: str) -> Response:

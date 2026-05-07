@@ -334,6 +334,11 @@ class TelegramPlatform(BasePlatform):
             conv = self.agent.memory.get(msg.platform, msg.user_id, msg.group_id)
             conv.add("user", text, author=user.username or user.first_name or "")
             suggestion = await self.agent.scan_intent(msg)
+            # Si l'intent ne se déclenche pas (silence ou pas de match), on
+            # tente la médiation douce (palier 2.5) — pré-filtre regex
+            # propre, cible ~1-2 % des messages, mutex implicite avec 2.2.
+            if not suggestion:
+                suggestion = await self.agent.scan_mediation(msg)
             if suggestion:
                 try:
                     await tg_msg.reply_text(

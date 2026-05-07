@@ -440,9 +440,73 @@ PROPOSE_INTENT_TOOL = {
 # faits de groupe exigent un groupe). PROPOSE_INTENT_TOOL n'est PAS dans
 # GROUP_TOOLS — il est exposé séparément dans le mode scan d'intention,
 # avec son propre system prompt.
+PROPOSE_MEDIATION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "propose_mediation",
+        "description": (
+            _INVOKE_RULE +
+            "Outil RÉSERVÉ au mode SCAN de médiation (palier 2.5). Tu es "
+            "appelé en mode silencieux pour examiner les derniers messages "
+            "d'un groupe et juger si une TENSION RÉELLE entre membres mérite "
+            "une médiation douce — auquel cas tu invoques cet outil avec une "
+            "reformulation neutre que GAB enverra spontanément.\n\n"
+            "RÈGLE D'OR — RETENUE MAXIMALE : tu n'invoques cet outil QUE si "
+            "TOUS les critères sont vrais :\n"
+            "1. Désaccord FACTUEL et CLAIR (pas une blague, pas du sarcasme, "
+            "   pas une animation ordinaire de discussion).\n"
+            "2. Au moins 2 membres distincts s'opposent dans le fil récent "
+            "   (sinon ce n'est pas un désaccord de groupe).\n"
+            "3. Le ton monte ou se durcit (insultes, ponctuation excessive, "
+            "   capitales, agacement répété), pas juste un avis tranché poli.\n"
+            "4. Le groupe ne semble pas en train de gérer le sujet de lui-même "
+            "   (humour, conciliation, retrait spontané).\n"
+            "Si le moindre critère manque, tu N'INVOQUES PAS l'outil et tu "
+            "réponds en texte vide. Le silence est la BONNE réponse 95 % du "
+            "temps — un GAB qui s'invite pour rien dans une discussion "
+            "animée paraît sentencieux.\n\n"
+            "EXEMPLES :\n"
+            "  • « Marc: c'est NUL ton idée !!! / Audrey: bah essaye autre "
+            "    chose alors / Marc: TU comprends rien » → INVOQUE avec "
+            "    reformulation='Vous avez chacun un avis tranché — je peux "
+            "    lancer un sondage pour trancher sereinement ?'\n"
+            "  • « Marc: pizza c'est pas terrible / Audrey: lol oui c'est "
+            "    une horreur 😂 » → IGNORE (humour partagé, pas de tension).\n"
+            "  • « Marc: je préfère sushi / Audrey: moi aussi » → IGNORE "
+            "    (accord, pas de désaccord).\n\n"
+            "FORMAT DE LA REFORMULATION : une seule phrase courte, en "
+            "français, NEUTRE — tu ne prends JAMAIS parti, tu acknowledge "
+            "le désaccord et tu proposes UNE action douce (sondage, break, "
+            "reformulation). Pas de moralisation, pas de jugement, pas de "
+            "« calmons-nous ». Préfère « plusieurs avis » à « vous vous "
+            "disputez ».\n\n"
+            "PAS DE BAVARDAGE : si tu hésites, tu te tais. Le coût d'une "
+            "médiation ratée (intervenir sur une blague, paraître "
+            "sentencieux) est très élevé."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "reformulation": {
+                    "type": "string",
+                    "description": (
+                        "Phrase courte (≤ 25 mots), neutre, qui acknowledge "
+                        "le désaccord SANS prendre parti et propose une "
+                        "action douce. Ex : « Plusieurs avis là-dessus — "
+                        "je peux lancer un sondage rapide pour trancher ? »."
+                    ),
+                },
+            },
+            "required": ["reformulation"],
+        },
+    },
+}
+
+
 GROUP_TOOLS: list[dict] = [
     CREATE_POLL_TOOL, CREATE_REMINDER_TOOL, CREATE_LIST_TOOL, CREATE_EVENT_TOOL,
     SET_FACTS_TOOL, FORGET_FACT_TOOL,
 ]
 DM_TOOLS:    list[dict] = [CREATE_REMINDER_TOOL]
 SCAN_TOOLS:  list[dict] = [PROPOSE_INTENT_TOOL]
+MEDIATION_TOOLS: list[dict] = [PROPOSE_MEDIATION_TOOL]
