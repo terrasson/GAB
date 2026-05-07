@@ -4,7 +4,9 @@ Utilise python-telegram-bot en mode polling.
 """
 
 import re
+import uuid
 import logging
+from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import (
@@ -135,8 +137,14 @@ class TelegramPlatform(BasePlatform):
         app.add_handler(CommandHandler("facts",        self._on_command))
         app.add_handler(CommandHandler("intent",       self._on_command))
         app.add_handler(CommandHandler("recap",        self._on_command))
+        app.add_handler(CommandHandler("billets",      self._on_command))
         app.add_handler(CallbackQueryHandler(self._on_button))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message))
+        # Palier 3b v1.b — ingestion de billets en PDF
+        app.add_handler(MessageHandler(
+            filters.Document.MimeType("application/pdf"),
+            self._on_document,
+        ))
         app.add_handler(ChatMemberHandler(self._on_chat_member, ChatMemberHandler.CHAT_MEMBER))
         app.add_handler(ChatMemberHandler(self._on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
 
@@ -145,6 +153,135 @@ class TelegramPlatform(BasePlatform):
 
     async def _on_message(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await self._dispatch(update, ctx)
+
+    async def _on_document(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Ingestion d'un billet en PDF (palier 3b v1.b).
+
+        Pipeline :
+        1. Télécharge le PDF dans `data/wallet/<user_id>/<uuid>.pdf`.
+        2. Extrait le texte via `pypdf` (cap 3000 chars).
+        3. Construit un `Message` avec `attachment_path` + texte préfixé,
+           appelle `agent.handle()` — le LLM doit invoquer `add_ticket`.
+        4. Si `response.action != "ticket_created"`, supprime le PDF
+           orphelin (le LLM a refusé d'extraire un billet, ou l'utilisateur
+           n'est pas whitelisté).
+        """
+        if not update.effective_message or not update.effective_user:
+            return
+        tg_msg = update.effective_message
+        user   = update.effective_user
+        chat   = update.effective_chat
+        is_group = chat.type in ("group", "supergroup")
+
+        doc = tg_msg.document
+        if not doc:
+            return
+
+        # Garde-fou taille : Telegram autorise jusqu'à 20 MB en upload bot,
+        # mais un billet propre fait 50-300 KB. Au-delà de 5 MB on se méfie.
+        if doc.file_size and doc.file_size > 5 * 1024 * 1024:
+            await tg_msg.reply_text(
+                "📎 Ce PDF est volumineux (> 5 MB). Pour l'instant je ne traite "
+                "que les billets standards. Renvoie-moi juste le récap en texte "
+                "et j'enregistrerai le billet."
+            )
+            return
+
+        # Stockage local : data/wallet/<owner_id>/<uuid>.pdf
+        owner_dir = Path("data") / "wallet" / str(user.id)
+        owner_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = owner_dir / f"{uuid.uuid4().hex}.pdf"
+
+        try:
+            tg_file = await doc.get_file()
+            await tg_file.download_to_drive(custom_path=str(pdf_path))
+        except Exception as exc:
+            logger.error("Téléchargement PDF échoué : %s", exc)
+            await tg_msg.reply_text(
+                "📎 Je n'ai pas réussi à télécharger ce PDF. Renvoie-le ou "
+                "donne-moi le récap en texte."
+            )
+            return
+
+        # Extraction texte
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(str(pdf_path))
+            if reader.is_encrypted:
+                raise ValueError("PDF chiffré, lecture impossible")
+            chunks = []
+            for page in reader.pages:
+                txt = page.extract_text() or ""
+                if txt.strip():
+                    chunks.append(txt)
+                if sum(len(c) for c in chunks) > 3500:
+                    break
+            extracted = "\n".join(chunks).strip()
+        except Exception as exc:
+            logger.warning("Extraction PDF échouée pour %s : %s", pdf_path, exc)
+            try:
+                pdf_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            await tg_msg.reply_text(
+                "📎 Je n'ai pas pu lire ce PDF (chiffré ou format inattendu). "
+                "Copie-colle-moi plutôt le contenu du mail de confirmation."
+            )
+            return
+
+        if not extracted:
+            try:
+                pdf_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            await tg_msg.reply_text(
+                "📎 Ce PDF ne contient pas de texte exploitable (image scannée ?). "
+                "Copie-colle-moi plutôt le récap du billet."
+            )
+            return
+
+        # Cap pour ne pas exploser le contexte LLM
+        if len(extracted) > 3000:
+            extracted = extracted[:3000] + "\n[…contenu tronqué]"
+
+        injected_text = (
+            "Je viens de te transférer un billet en PDF. Voici le contenu "
+            "extrait :\n\n"
+            "```\n"
+            f"{extracted}\n"
+            "```\n\n"
+            "Enregistre-le dans mon wallet en utilisant l'outil approprié."
+        )
+
+        msg = Message(
+            platform        = self.name,
+            user_id         = str(user.id),
+            username        = user.first_name or user.username or "User",
+            text            = injected_text,
+            group_id        = str(chat.id) if is_group else None,
+            group_name      = chat.title if is_group else None,
+            attachment_path = str(pdf_path),
+        )
+
+        # Indicateur visuel pendant l'extraction LLM
+        try:
+            await ctx.bot.send_chat_action(chat_id=chat.id, action=ChatAction.TYPING)
+        except Exception:
+            pass
+
+        response = await self.agent.handle(msg)
+
+        # Cleanup si le ticket n'a pas été créé (LLM a refusé / whitelist KO /
+        # données ambiguës). On évite d'accumuler des PDF orphelins.
+        if response.action != "ticket_created":
+            try:
+                pdf_path.unlink(missing_ok=True)
+                logger.info("PDF orphelin supprimé : %s", pdf_path)
+            except OSError as exc:
+                logger.warning("Cleanup PDF orphelin KO : %s", exc)
+
+        if response.text:
+            await tg_msg.reply_text(response.text, parse_mode=ParseMode.MARKDOWN)
 
     async def _on_button(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         query = update.callback_query

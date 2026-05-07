@@ -62,6 +62,13 @@ class Message:
     text: str
     group_id: str | None = None   # ID du groupe/channel si message depuis un groupe
     group_name: str | None = None
+    # Pièce jointe locale déjà téléchargée par la plateforme (palier 3b v1.b).
+    # Renseigné quand l'utilisateur envoie un PDF de billet : la plateforme
+    # télécharge le fichier puis l'extrait en texte injecté dans `text`, et
+    # passe ici le chemin disque pour que `_exec_add_ticket` le persiste sur
+    # la ligne ticket. Si aucun ticket n'est créé, la plateforme nettoie
+    # le fichier orphelin (cf. Response.action == "ticket_created").
+    attachment_path: str | None = None
 
 
 @dataclass
@@ -840,6 +847,7 @@ class GabAgent:
             reference     = ref,
             seat          = seat,
             raw_excerpt   = msg.text,
+            file_path     = msg.attachment_path,
         )
 
         # Rappels automatiques J-D 18h locale + H-H. Si une borne est déjà
@@ -899,9 +907,17 @@ class GabAgent:
                 f"{'s' if len(scheduled) > 1 else ''} : {', '.join(scheduled)}."
             )
 
+        if msg.attachment_path:
+            confirm_lines.append("📎 PDF original conservé.")
         confirm_lines.append(f"`id: {ticket['id']}`")
         conv.add("assistant", accompanying_text or "Billet enregistré.")
-        return Response(text="\n".join(confirm_lines))
+        # action="ticket_created" permet à la plateforme de savoir que la
+        # pièce jointe a été consommée et qu'il ne faut PAS la supprimer.
+        return Response(
+            text        = "\n".join(confirm_lines),
+            action      = "ticket_created",
+            action_data = {"ticket_id": ticket["id"]},
+        )
 
     def _exec_set_facts(self, msg: Message, tool_call) -> None:
         """Mémorise des faits en mémoire sémantique. Side-effect silencieux :

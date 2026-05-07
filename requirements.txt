@@ -13,3 +13,6 @@ discord.py==2.3.2
 
 # ── Config ────────────────────────────────────────────────────────────────────
 python-dotenv==1.0.1
+
+# ── Wallet de billets (palier 3b v1.b — extraction texte des PDF) ─────────────
+pypdf==4.3.1
