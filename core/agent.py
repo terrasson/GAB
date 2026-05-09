@@ -5,6 +5,7 @@ le traite avec le LLM configuré et retourne une réponse unifiée.
 """
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -114,6 +115,59 @@ class GabAgent:
         self.facts     = FactStore()
         self.settings  = GroupSettings()
         self.llm       = make_llm_client(cfg)
+        # Fenêtres de follow-up : `(group_id, user_id) → expiry monotonic ts`.
+        # Quand GAB pose une question dans un groupe, on enregistre une
+        # fenêtre de FOLLOWUP_TTL_SECONDS pendant laquelle le prochain
+        # message du même utilisateur dans ce groupe réveille GAB sans
+        # exiger `#gab` / @mention. ForceReply Telegram nudge déjà l'user
+        # à utiliser Reply, mais beaucoup d'utilisateurs tapent leur
+        # réponse au clavier normal — sans ce filet GAB resterait sourd
+        # à sa propre question.
+        self._pending_followups: dict[tuple[str, str], float] = {}
+
+    # TTL d'une fenêtre de follow-up. 90 s couvre une réponse réfléchie
+    # sans laisser GAB "écouter" indéfiniment (et donc s'auto-réveiller
+    # sur des messages qui ne le concernent plus).
+    FOLLOWUP_TTL_SECONDS = 90.0
+
+    # ── Fenêtres de follow-up ────────────────────────────────────────────────
+
+    def mark_pending_followup(self, group_id: str, user_id: str) -> None:
+        """À appeler quand GAB vient de poser une question à `user_id`
+        dans `group_id`. Le prochain message du même user dans ce groupe
+        sera traité comme adressé à GAB pendant FOLLOWUP_TTL_SECONDS."""
+        if not group_id or not user_id:
+            return
+        self._gc_pending_followups()
+        deadline = time.monotonic() + self.FOLLOWUP_TTL_SECONDS
+        self._pending_followups[(group_id, user_id)] = deadline
+
+    def has_pending_followup(self, group_id: str, user_id: str) -> bool:
+        """True si une question est encore "ouverte" pour ce (group, user)."""
+        if not group_id or not user_id:
+            return False
+        deadline = self._pending_followups.get((group_id, user_id))
+        if deadline is None:
+            return False
+        if deadline <= time.monotonic():
+            del self._pending_followups[(group_id, user_id)]
+            return False
+        return True
+
+    def consume_pending_followup(self, group_id: str, user_id: str) -> bool:
+        """Vérifie + retire la fenêtre. Retourne True si une fenêtre
+        active a été consommée (= GAB doit répondre à ce message)."""
+        if not self.has_pending_followup(group_id, user_id):
+            return False
+        del self._pending_followups[(group_id, user_id)]
+        return True
+
+    def _gc_pending_followups(self) -> None:
+        """Supprime les entrées expirées (cleanup paresseux à chaque mark)."""
+        now = time.monotonic()
+        expired = [k for k, t in self._pending_followups.items() if t <= now]
+        for k in expired:
+            del self._pending_followups[k]
 
     # ── Point d'entrée principal ─────────────────────────────────────────────
 

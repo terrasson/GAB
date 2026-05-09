@@ -38,7 +38,16 @@ GET_WEATHER_TOOL = {
             "LIMITES : forecast jusqu'à 16 jours dans le futur. Pas de météo "
             "passée (lève une erreur). Si la ville n'est pas trouvée, l'outil "
             "renvoie un message d'erreur — REFORMULE-LE simplement à l'user, "
-            "ne fais pas semblant de connaître."
+            "ne fais pas semblant de connaître.\n\n"
+            "RÈGLE D'OR pour `location` : tu passes DIRECTEMENT ce que "
+            "l'utilisateur a dit, même si c'est un département (« Var », "
+            "« 83 », « Alpes-Maritimes ») ou une région (« Bretagne », "
+            "« PACA », « Île-de-France »). L'outil reconnaît tous les "
+            "départements et régions français et les rabat sur leur ville "
+            "chef-lieu. Tu n'as JAMAIS à demander un code postal ou une "
+            "ville plus précise — invoque l'outil et laisse-le résoudre. "
+            "Tu ne demandes une précision QUE si l'outil retourne une "
+            "erreur de géocodage."
         ),
         "parameters": {
             "type": "object",
@@ -46,9 +55,11 @@ GET_WEATHER_TOOL = {
                 "location": {
                     "type": "string",
                     "description": (
-                        "Nom du lieu en clair (ville, commune, région). "
-                        "Ex : « Lyon », « Paris », « Annecy », « Tahiti ». "
-                        "L'outil fait son propre géocodage."
+                        "Nom du lieu en clair tel que l'utilisateur l'a "
+                        "donné : ville (« Lyon », « Annecy »), département "
+                        "(« Var », « 83 »), région (« Bretagne », « PACA ») "
+                        "ou code postal (« 83000 »). L'outil fait son propre "
+                        "géocodage et reconnaît les départements/régions FR."
                     ),
                 },
                 "date": {

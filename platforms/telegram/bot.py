@@ -523,12 +523,17 @@ class TelegramPlatform(BasePlatform):
         # Réponse silencieuse : on n'envoie rien (utile pour le rejet whitelist
         # en groupe ou tout autre cas où Response.text est vide).
         if response.text:
-            # Si GAB pose une question dans un groupe, on attache ForceReply pour
-            # nudger l'utilisateur à répondre via la fonction Reply de Telegram.
-            # Sans ça, en mode passif, sa réponse libre serait ignorée.
+            # Si GAB pose une question dans un groupe, on attache ForceReply
+            # POUR NUDGER l'utilisateur à utiliser la fonction Reply de
+            # Telegram, ET on ouvre une fenêtre de follow-up côté agent
+            # POUR RATTRAPER les utilisateurs qui ignorent ForceReply et
+            # tapent leur réponse au clavier normal — sans cette fenêtre,
+            # le message suivant du même user n'éveille pas GAB en mode
+            # passif (pas de #gab) et la conversation tombe à l'eau.
             reply_markup = None
             if is_group and response.text.rstrip().endswith("?"):
                 reply_markup = ForceReply(selective=True)
+                self.agent.mark_pending_followup(msg.group_id, msg.user_id)
             await tg_msg.reply_text(
                 response.text,
                 parse_mode   = ParseMode.MARKDOWN,
@@ -557,6 +562,9 @@ class TelegramPlatform(BasePlatform):
         - Mention textuelle `@<bot_username>`
         - Hashtag d'éveil (`#gab`, `#ia`, …) configurable via WAKE_TAGS
         - Réponse à l'un de ses propres messages
+        - Follow-up : si GAB vient de poser une question à cet user,
+          son message suivant dans la fenêtre TTL est traité comme une
+          réponse, même sans wake tag.
         """
         text = tg_msg.text or ""
 
@@ -583,6 +591,20 @@ class TelegramPlatform(BasePlatform):
         # Réponse à un message de GAB
         if tg_msg.reply_to_message and tg_msg.reply_to_message.from_user:
             if tg_msg.reply_to_message.from_user.id == ctx.bot.id:
+                return True
+
+        # Fenêtre de follow-up : GAB a posé une question à ce user récemment.
+        # On consomme la fenêtre (one-shot) pour ne pas s'auto-réveiller sur
+        # plusieurs messages d'affilée si l'user enchaîne — la prochaine
+        # question de GAB rouvrira une nouvelle fenêtre.
+        chat = tg_msg.chat
+        user = tg_msg.from_user
+        if chat and user and chat.type in ("group", "supergroup"):
+            if self.agent.consume_pending_followup(str(chat.id), str(user.id)):
+                logger.info(
+                    "follow-up consommé : %s/%s répond à une question de GAB",
+                    chat.id, user.id,
+                )
                 return True
 
         return False
