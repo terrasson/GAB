@@ -1030,6 +1030,17 @@ class GabAgent:
             logger.error("get_weather a planté : %s", exc)
             tool_output = "Erreur interne, impossible de récupérer la météo."
 
+        # Si le géocodage a échoué et qu'on est en groupe, le LLM va très
+        # probablement demander une précision à l'user. On ouvre une fenêtre
+        # de follow-up pour que la réponse de l'user arrive sans avoir besoin
+        # de #gab — sans ça, GAB reste sourd après sa propre question.
+        if msg.group_id and "Erreur géocodage" in tool_output:
+            self.mark_pending_followup(msg.group_id, msg.user_id)
+            logger.info(
+                "follow-up météo géocodage KO: ouvert pour %s/%s",
+                msg.group_id, msg.user_id,
+            )
+
         # On reconstruit l'historique avec le tool call et son résultat,
         # au format OpenAI tool-use. `Conversation.add()` ne supporte pas
         # le rôle `tool` ; on garde le round-trip *éphémère* (non persisté).

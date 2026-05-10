@@ -530,8 +530,15 @@ class TelegramPlatform(BasePlatform):
             # tapent leur réponse au clavier normal — sans cette fenêtre,
             # le message suivant du même user n'éveille pas GAB en mode
             # passif (pas de #gab) et la conversation tombe à l'eau.
+            #
+            # Critères d'ouverture de la fenêtre de follow-up :
+            # 1. Question explicite (termine par ?) — le cas canonique.
+            # 2. Formulation impérative avec indicateur d'attente de réponse
+            #    (donne-moi, indique, précise, dis-moi, peux-tu, stp, etc.)
+            #    même sans point d'interrogation terminal.
             reply_markup = None
-            if is_group and response.text.rstrip().endswith("?"):
+            is_question = self._response_is_awaiting_reply(response.text)
+            if is_group and is_question:
                 reply_markup = ForceReply(selective=True)
                 self.agent.mark_pending_followup(msg.group_id, msg.user_id)
             await tg_msg.reply_text(
@@ -608,6 +615,50 @@ class TelegramPlatform(BasePlatform):
                 return True
 
         return False
+
+        # ── Détection "GAB attend une réponse" ──────────────────────────────────
+
+    # Mots/patterns qui indiquent une demande de réponse user,
+    # même sans point d'interrogation terminal.
+    _REPLY_WAITING_PATTERNS = (
+        r"\bdonne[- ]moi\b",
+        r"\bindique[- ]moi\b",
+        r"\bprécise\b",
+        r"\bdis[- ]moi\b",
+        r"\bdonne[- ]leur\b",
+        r"\benvoie[- ]moi\b",
+        r"\bpeux[- ]tu\b",
+        r"\bpouvez[- ]vous\b",
+        r"\bje veux\b",
+        r"\bje voudrais\b",
+        r"\bje besoins?\b",
+        r"\bstp\b",
+        r"\bs'il te plaît\b",
+        r"\bs'il vous plaît\b",
+        r"\bmerci de\b",
+        r"\bpuis[- ]je\b",
+        r"\bdites[- ]moi\b",
+        r"\bpourrais[- ]tu\b",
+        r"\bpourrais[- ]vous\b",
+        r"\baito\b",
+    )
+    _REPLY_WAITING_RE = __import__("re").compile(
+        "|".join(_REPLY_WAITING_PATTERNS),
+        __import__("re").IGNORECASE,
+    )
+
+    @classmethod
+    def _response_is_awaiting_reply(cls, text: str) -> bool:
+        """True si `text` ressemble à une demande de réponse user.
+
+        Canonical : sentence finissant par « ? »
+        Impératif déguisé : contient un pattern de demande
+        (« donne-moi le code postal », « indique-moi », etc.)
+        """
+        t = text.strip()
+        if t.endswith("?"):
+            return True
+        return bool(cls._REPLY_WAITING_RE.search(t))
 
     # ── Sondages : rendu du clavier + traitement d'un clic de vote ────────────
 

@@ -50,6 +50,115 @@ def _norm_fr(s: str) -> str:
     return " ".join(s.split())
 
 
+# Préfixes qui introduisent un département / région après une ville ou un lieu.
+_DEPT_PREPOSITIONS = [
+    "dans le ", "dans la ", "dans l'", "dans ",
+    "au ", "aux ",
+    "en ",
+    "department ", "département ",
+    "du ",
+]
+# Alias de départements très courts que Open-Meteo peut résoudre directement
+# mais qu'on veut malgré tout spécifier pour lever l'ambiguïté
+_SHORT_DEPT_CODES = {f"{i:02d}" for i in range(1, 96)}
+
+
+def _extract_dept_suffix(norm: str) -> tuple[str, str] | None:
+    """Repère un département ou région française dans `norm` et retourne
+    (dept_canonical, reste_de_la_chaine).
+
+    Exemples :
+      "saint raphael dans le var"       → ("var", "saint raphael")
+      "marseille dans les bouches du rhone" → ("bouches du rhone", "marseille")
+      "meteo dans le 83"               → ("83", "meteo")
+      "lausanne dans le var"            → ("var", "lausanne")
+    """
+    norm_lower = norm.lower()
+
+    # Déterminants à supprimer avant de chercher le nom de département.
+    # Gère « dans le Var » (préfixe "dans le " puis stripped "var"),
+    # « les Bouches-du-Rhône » (stripped "bouches du rhone"),
+    # « du Rhône » (prefix "du " → "rhone").
+    _DET_STRIP = ("le ", "la ", "les ", "l'")
+
+    def _strip_trailing_det(s: str) -> str:
+        """Retire un déterminant résiduel en bout de chaîne, avec gestion
+        des espaces de bout. Gère aussi les prépositions simples (dans le,
+        dans la, au, en, du) qui traînent après le nom de dept."""
+        s = s.strip()
+        for det in _DET_STRIP:
+            if s.endswith(det):
+                s = s[:-len(det)].strip()
+        # Gérer les prépositions + article restants ("dans le", "dans la",
+        # "au", "aux", "en", "du")
+        for prep in ("dans le", "dans la", "dans l", "au ", "aux ", "du ", "en "):
+            if s.endswith(prep):
+                s = s[:-len(prep)].strip()
+        # cas "dans l'" (apostrophe)
+        if s.endswith("dans l"):
+            s = s[:-5].strip()
+        return s
+
+    def _try_find_dept(remaining: str) -> tuple[str, str] | None:
+        """Cherche un dept/région connu dans `remaining`. Si trouvé,
+        retourne (dept_key, before) où `before` est la partie avant."""
+        # d'abord exact match
+        if remaining in _FR_ALIASES:
+            key_start = norm_lower.find(remaining)
+            before = _strip_trailing_det(norm_lower[:key_start])
+            return (remaining, before)
+        # puis codes dept à 2 chiffres avec déterminant
+        for det in _DET_STRIP:
+            if remaining.startswith(det):
+                code = remaining[len(det):].strip()
+                if code in _SHORT_DEPT_CODES and code in _FR_ALIASES:
+                    key_start = norm_lower.find(remaining)
+                    before = _strip_trailing_det(norm_lower[:key_start])
+                    return (code, before)
+        return None
+
+    # 1. itérer sur les préfixes, puis sur les dept/régions du dict
+    #    pour trouver le match le plus à droite
+    best = None
+    for prefix in _DEPT_PREPOSITIONS:
+        idx = norm_lower.find(prefix)
+        if idx == -1:
+            continue
+        remaining = norm_lower[idx + len(prefix):].strip()
+        result = _try_find_dept(remaining)
+        if result:
+            best = result  # on garde le premier trouvé (le plus à gauche)
+            # on ne break pas car on veut le plus à droite — continuer
+
+    # 2. Chercher le dept le plus à droite (clé la plus longue d'abord
+    #    pour éviter les faux positifs sur "rhone" dans "rhone alpes")
+    if not best:
+        sorted_keys = sorted(_FR_ALIASES.keys(), key=len, reverse=True)
+        for key in sorted_keys:
+            idx = norm_lower.rfind(key)
+            if idx == -1:
+                continue
+            before = _strip_trailing_det(norm_lower[:idx])
+            if before:  # il reste quelque chose avant le dept
+                best = (key, before)
+                break
+
+    # 3. Chercher un code dept à 2 chiffres seul en fin de chaîne
+    #    (ex : "meteo 83", "la meteo 83")
+    if not best:
+        parts = norm.split()
+        if len(parts[-1]) == 2 and parts[-1] in _SHORT_DEPT_CODES:
+            dept = parts[-1]
+            if dept in _FR_ALIASES:
+                before = " ".join(parts[:-1]).strip()
+                for det in _DET_STRIP:
+                    if before.endswith(det):
+                        before = before[:-len(det)].strip()
+                best = (dept, before)
+
+    return best
+
+
 # Map des 101 départements français → ville chef-lieu (préfecture).
 # Les codes département sont aussi acceptés (« 06 », « 83 »).
 _FR_DEPT_TO_CITY: dict[str, str] = {
@@ -245,12 +354,92 @@ async def geocode(name: str) -> dict:
     ou une région (« Bretagne », « PACA »), on rabat sur la ville
     chef-lieu avant d'interroger Open-Meteo. Cf. `_FR_ALIASES`.
 
-    Renvoie un dict : `{label, latitude, longitude, country, timezone}`.
+    Gestion composite « ville dans dept » : on extrait le département via
+    `_extract_dept_suffix`, on cherche la ville dans Open-Meteo (count=10)
+    et on filtre les résultats par admin1 matching le département.
+
+    Renvoie un dict : `{label, latitude, longitude, country, admin1, timezone}`.
     """
     raw = (name or "").strip()
     if not raw:
         raise GeocodingError("nom de lieu vide")
 
+    norm = _norm_fr(raw)
+
+    # Extraction d'un dept/région après une préposition ou code dept isolé
+    # (ex: "Saint-Raphaël dans le var" → ville="Saint-Raphaël", dept="var")
+    dept_info = _extract_dept_suffix(norm)
+
+    if dept_info:
+        dept_key, location_part = dept_info
+        alias = _FR_ALIASES.get(dept_key, "")
+        # admin1 brut Open-Meteo = nom du département capitalisé avec tirets
+        admin1_target = alias or _norm_fr(dept_key).title().replace(" ", "-")
+        logger.info(
+            "geocode dept suffix: ville=%r dept=%r admin1=%r",
+            location_part, dept_key, admin1_target,
+        )
+        if not location_part:
+            # Pas de ville explicite, juste le dept → rabat sur chef-lieu
+            if alias:
+                query = alias
+                logger.info("geocode: pas de ville, alias dept %s → %s", dept_key, alias)
+            else:
+                raise GeocodingError(f"département « {dept_key} » non reconnu")
+            params = {"name": query, "count": 1, "language": "fr", "format": "json"}
+            async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+                resp = await client.get(_GEOCODE_URL, params=params)
+                resp.raise_for_status()
+                data = resp.json()
+            results = data.get("results") or []
+            if not results:
+                raise GeocodingError(f"aucun lieu trouvé pour « {dept_key} »")
+            r = results[0]
+            return {
+                "label":     r.get("name") or query,
+                "country":   r.get("country") or "",
+                "admin1":    r.get("admin1") or "",
+                "latitude":  float(r["latitude"]),
+                "longitude": float(r["longitude"]),
+                "timezone":  r.get("timezone") or "auto",
+            }
+        params = {"name": location_part, "count": 10, "language": "fr", "format": "json"}
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+            resp = await client.get(_GEOCODE_URL, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+        results = data.get("results") or []
+        # Filtrer sur admin1 matching le département
+        norm_target = _norm_fr(admin1_target)
+        for r in results:
+            admin1_r = (r.get("admin1") or "")
+            if _norm_fr(admin1_r) == norm_target:
+                return {
+                    "label":     r.get("name") or location_part,
+                    "country":   r.get("country") or "",
+                    "admin1":    r.get("admin1") or "",
+                    "latitude":  float(r["latitude"]),
+                    "longitude": float(r["longitude"]),
+                    "timezone":  r.get("timezone") or "auto",
+                }
+        # Si aucun match par admin1, on prend le premier résultat (fallback)
+        if results:
+            r = results[0]
+            logger.warning(
+                "geocode dept suffix: aucun résultat avec admin1 %r (taken: %s / %s)",
+                admin1_target, r.get("name"), r.get("admin1"),
+            )
+            return {
+                "label":     r.get("name") or location_part,
+                "country":   r.get("country") or "",
+                "admin1":    r.get("admin1") or "",
+                "latitude":  float(r["latitude"]),
+                "longitude": float(r["longitude"]),
+                "timezone":  r.get("timezone") or "auto",
+            }
+        raise GeocodingError(f"aucun lieu trouvé pour « {raw} »")
+
+    # Pas de préposition dept : comportement original
     query = raw
     aliased = _resolve_fr_alias(raw)
     if aliased:
